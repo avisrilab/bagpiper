@@ -20,6 +20,8 @@ name = "bagpiper"
 path = "src/main.rs"
 
 [dependencies]
+clap = { version = "4.6.5", features = ["derive"] }
+noodles = { version = "0.114.0", features = ["bam", "sam", "bgzf"] }
 
 [profile.release]
 opt-level = 3

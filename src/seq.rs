@@ -54,6 +54,18 @@ impl CellId {
     pub fn render(&self) -> String {
         render_2bit(self.0, Self::RENDER_LEN)
     }
+
+    /// Parse a rendered barcode string (ACGT) back to its packed value. None on any non-ACGT.
+    pub fn from_ascii(seq: &[u8]) -> Option<CellId> {
+        if seq.len() > 32 {
+            return None;
+        }
+        let mut value = 0u64;
+        for &b in seq {
+            value = (value << 2) | encode_base(b)? as u64;
+        }
+        Some(CellId(value))
+    }
 }
 
 /// Packed UMI, 2 bits per base, up to 32 nt. Upstream extraction emits ACGT only; a non-ACGT base
@@ -121,6 +133,14 @@ mod tests {
         assert!(CellId::from_rows([96, 0, 0, 0]).is_none());
         assert!(CellId::from_rows([u64::MAX, 0, 0, 0]).is_none());
         assert!(CellId::from_rows([0, 0, 0, u64::MAX - 1]).is_none());
+    }
+
+    #[test]
+    fn cellid_from_ascii_round_trips_render() {
+        let s = "AAACGTTGCAGAACAC";
+        assert_eq!(CellId::from_ascii(s.as_bytes()).unwrap().render(), s);
+        let c = CellId(96);
+        assert_eq!(CellId::from_ascii(c.render().as_bytes()).unwrap(), c);
     }
 
     #[test]
