@@ -1,3 +1,4 @@
+pub mod barcode;
 pub mod chemistry;
 pub mod count;
 pub mod dedup;

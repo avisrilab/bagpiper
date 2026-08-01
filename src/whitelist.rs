@@ -16,6 +16,11 @@ pub const NOT_FOUND: u64 = u64::MAX;
 /// A segment edit-1 from two different rows, so not correctable unambiguously.
 pub const AMBIGUOUS: u64 = u64::MAX - 1;
 
+/// True if any resolved segment was left ambiguous (distinguishes ambiguity from a plain miss).
+pub fn is_ambiguous(rows: &[u64]) -> bool {
+    rows.iter().any(|&r| r == AMBIGUOUS)
+}
+
 /// Four-segment PIP-seq whitelist. `primary[i]` maps the reverse-complemented segment i to its row;
 /// `secondary[i]` maps each edit-1 neighbor to its row (or [`AMBIGUOUS`]).
 pub struct Whitelist {
