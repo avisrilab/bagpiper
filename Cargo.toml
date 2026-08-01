@@ -28,3 +28,6 @@ regex = "1.13.1"
 [profile.release]
 opt-level = 3
 lto = "thin"
+
+[dev-dependencies]
+bio = "2.3.0"
