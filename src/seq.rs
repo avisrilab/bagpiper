@@ -26,6 +26,20 @@ pub fn render_2bit(value: u64, len: usize) -> String {
     String::from_utf8(bytes).unwrap()
 }
 
+/// Reverse complement of an ACGT byte string; any non-ACGT byte is passed through unchanged.
+pub fn revcomp(seq: &[u8]) -> Vec<u8> {
+    seq.iter()
+        .rev()
+        .map(|&b| match b {
+            b'A' => b'T',
+            b'T' => b'A',
+            b'C' => b'G',
+            b'G' => b'C',
+            other => other,
+        })
+        .collect()
+}
+
 /// Cell barcode identity: the base-96 pack of four whitelist row indices (segment 0 least
 /// significant), rendered to a 16 nt string for `barcodes.tsv`.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
@@ -107,6 +121,13 @@ impl Umi {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn revcomp_complements_and_reverses() {
+        assert_eq!(revcomp(b"ACGT"), b"ACGT");
+        assert_eq!(revcomp(b"AAAC"), b"GTTT");
+        assert_eq!(revcomp(b"TTCG"), b"CGAA");
+    }
 
     #[test]
     fn render_2bit_is_msb_first() {
