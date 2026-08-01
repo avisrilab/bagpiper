@@ -23,6 +23,7 @@ path = "src/main.rs"
 clap = { version = "4.6.5", features = ["derive"] }
 flate2 = "1.1.9"
 noodles = { version = "0.114.0", features = ["bam", "sam", "bgzf"] }
+regex = "1.13.1"
 
 [profile.release]
 opt-level = 3
