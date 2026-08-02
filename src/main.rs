@@ -29,6 +29,16 @@ enum Cmd {
         #[arg(long)]
         nanopore: bool,
     },
+    /// Count matrix from a name-grouped BAM: exact-dedup molecules and run the per-cell EM, writing
+    /// gzipped MatrixMarket + barcodes/features.
+    Count {
+        /// pre-aligned, name-grouped BAM
+        #[arg(long)]
+        b1: PathBuf,
+        /// output directory
+        #[arg(short, long)]
+        output: PathBuf,
+    },
 }
 
 fn main() -> std::io::Result<()> {
@@ -52,6 +62,20 @@ fn main() -> std::io::Result<()> {
             eprintln!(
                 "Total: {}  Matched: {}  Small: {}  Ambiguous: {}  Mismatch: {}",
                 stats.total, stats.matched, stats.small, stats.ambiguous, stats.mismatch
+            );
+        }
+        Cmd::Count { b1, output } => {
+            std::fs::create_dir_all(&output)?;
+            let mut eq = bagpiper::eqclass::read_bam(&b1)?;
+            let raw = eq.molecules.len();
+            bagpiper::dedup::exact(&mut eq.molecules);
+            bagpiper::count::write_matrix(&eq, &output)?;
+            eprintln!(
+                "transcripts: {}  molecules: {} -> deduped: {}  output: {}",
+                eq.transcripts.len(),
+                raw,
+                eq.molecules.len(),
+                output.display()
             );
         }
     }
