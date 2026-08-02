@@ -94,6 +94,7 @@ version = "0.1.0"
 dependencies = [
  "bio",
  "clap",
+ "crossbeam-channel",
  "flate2",
  "needletail",
  "noodles",

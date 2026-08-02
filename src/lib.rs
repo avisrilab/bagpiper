@@ -5,6 +5,7 @@ pub mod dedup;
 pub mod em;
 pub mod eqclass;
 pub mod fastq;
+pub mod parallel;
 pub mod seal;
 pub mod seq;
 pub mod whitelist;

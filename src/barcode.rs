@@ -15,6 +15,7 @@ use regex::Regex;
 
 use crate::chemistry::Chemistry;
 use crate::fastq;
+use crate::parallel;
 use crate::seal;
 use crate::seq::{revcomp, CellId};
 use crate::whitelist::{is_ambiguous, Whitelist};
@@ -206,43 +207,58 @@ pub fn run_nanopore(r1: &Path, wl_path: &Path, out_dir: &Path) -> io::Result<Sta
     let wl = Whitelist::from_csv(wl_path)?;
     let rev = Chemistry::PipV4.barcode_regex(true);
     let fwd = Chemistry::PipV4.barcode_regex(false);
-    let mut passed = gz_writer(out_dir.join("passed.bcd.nanopore.fa.gz"))?;
-    let mut failed = gz_writer(out_dir.join("failed.bcd.nanopore.fa.gz"))?;
+    let passed = gz_writer(out_dir.join("passed.bcd.nanopore.fa.gz"))?;
+    let failed = gz_writer(out_dir.join("failed.bcd.nanopore.fa.gz"))?;
     let mut reader = fastq::open_gz(r1)?;
-    let mut stats = Stats::default();
 
-    while let Some(rec) = reader.next() {
-        let rec = rec.map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-        stats.total += 1;
-        let name = fastq::read_name(rec.id()).to_vec();
-        let seq = rec.seq();
-        match assign_nanopore(&seq, &rev, &fwd, &wl) {
-            Assign::Matched { cell, umi, cdna, is_polya } => {
-                let (umi, cdna) = if is_polya {
-                    (umi, cdna)
-                } else {
-                    (revcomp(&umi), revcomp(&cdna))
-                };
-                write_fasta(&mut passed, &record_id(&name, cell, &umi), &cdna)?;
-                stats.matched += 1;
+    parallel::run(
+        || {
+            reader.next().map(|rec| {
+                let rec = rec.expect("invalid FASTQ record");
+                (fastq::read_name(rec.id()).to_vec(), rec.seq().to_vec())
+            })
+        },
+        parallel::default_workers(),
+        || (),
+        |_: &mut (), (name, seq): (Vec<u8>, Vec<u8>)| {
+            let a = assign_nanopore(&seq, &rev, &fwd, &wl);
+            (name, seq, a)
+        },
+        move |rx| -> io::Result<Stats> {
+            let mut passed = passed;
+            let mut failed = failed;
+            let mut stats = Stats::default();
+            for (name, seq, a) in rx {
+                stats.total += 1;
+                match a {
+                    Assign::Matched { cell, umi, cdna, is_polya } => {
+                        if is_polya {
+                            write_fasta(&mut passed, &record_id(&name, cell, &umi), &cdna)?;
+                        } else {
+                            let (umi, cdna) = (revcomp(&umi), revcomp(&cdna));
+                            write_fasta(&mut passed, &record_id(&name, cell, &umi), &cdna)?;
+                        }
+                        stats.matched += 1;
+                    }
+                    Assign::Small => {
+                        write_fasta(&mut failed, &name, &seq)?;
+                        stats.small += 1;
+                    }
+                    Assign::Ambiguous => {
+                        write_fasta(&mut failed, &name, &seq)?;
+                        stats.ambiguous += 1;
+                    }
+                    _ => {
+                        write_fasta(&mut failed, &name, &seq)?;
+                        stats.mismatch += 1;
+                    }
+                }
             }
-            Assign::Small => {
-                write_fasta(&mut failed, &name, &seq)?;
-                stats.small += 1;
-            }
-            Assign::Ambiguous => {
-                write_fasta(&mut failed, &name, &seq)?;
-                stats.ambiguous += 1;
-            }
-            _ => {
-                write_fasta(&mut failed, &name, &seq)?;
-                stats.mismatch += 1;
-            }
-        }
-    }
-    passed.finish()?;
-    failed.finish()?;
-    Ok(stats)
+            passed.finish()?;
+            failed.finish()?;
+            Ok(stats)
+        },
+    )
 }
 
 /// Illumina: match the reverse regex on revcomp(R1), pair the barcode with R2 as cDNA, and write
@@ -250,35 +266,50 @@ pub fn run_nanopore(r1: &Path, wl_path: &Path, out_dir: &Path) -> io::Result<Sta
 pub fn run_illumina(r1: &Path, r2: &Path, wl_path: &Path, out_dir: &Path) -> io::Result<Stats> {
     let wl = Whitelist::from_csv(wl_path)?;
     let rev = Chemistry::PipV4.barcode_regex(true);
-    let mut out = gz_writer(out_dir.join("read.bcd.illumina.fa.gz"))?;
+    let out = gz_writer(out_dir.join("read.bcd.illumina.fa.gz"))?;
     let mut r1r = fastq::open_gz(r1)?;
     let mut r2r = fastq::open_gz(r2)?;
-    let mut stats = Stats::default();
 
-    loop {
-        let (rec1, rec2) = match (r1r.next(), r2r.next()) {
-            (Some(a), Some(b)) => (
-                a.map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?,
-                b.map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?,
-            ),
-            (None, None) => break,
-            _ => return Err(io::Error::new(io::ErrorKind::InvalidData, "R1/R2 record count mismatch")),
-        };
-        stats.total += 1;
-        let name = fastq::read_name(rec1.id()).to_vec();
-        match assign_illumina(&rec1.seq(), &rec2.seq(), &rev, &wl) {
-            Assign::Matched { cell, umi, cdna, .. } => {
-                write_fasta(&mut out, &record_id(&name, cell, &umi), &cdna)?;
-                stats.matched += 1;
+    parallel::run(
+        || match (r1r.next(), r2r.next()) {
+            (Some(a), Some(b)) => {
+                let a = a.expect("invalid R1 record");
+                let b = b.expect("invalid R2 record");
+                Some((
+                    fastq::read_name(a.id()).to_vec(),
+                    a.seq().to_vec(),
+                    b.seq().to_vec(),
+                ))
             }
-            Assign::NoRegex => stats.no_regex += 1,
-            Assign::MultiRegex => stats.multi += 1,
-            Assign::Ambiguous => stats.ambiguous += 1,
-            _ => stats.mismatch += 1,
-        }
-    }
-    out.finish()?;
-    Ok(stats)
+            (None, None) => None,
+            _ => panic!("R1/R2 record count mismatch"),
+        },
+        parallel::default_workers(),
+        || (),
+        |_: &mut (), (name, r1seq, r2seq): (Vec<u8>, Vec<u8>, Vec<u8>)| {
+            let a = assign_illumina(&r1seq, &r2seq, &rev, &wl);
+            (name, a)
+        },
+        move |rx| -> io::Result<Stats> {
+            let mut out = out;
+            let mut stats = Stats::default();
+            for (name, a) in rx {
+                stats.total += 1;
+                match a {
+                    Assign::Matched { cell, umi, cdna, .. } => {
+                        write_fasta(&mut out, &record_id(&name, cell, &umi), &cdna)?;
+                        stats.matched += 1;
+                    }
+                    Assign::NoRegex => stats.no_regex += 1,
+                    Assign::MultiRegex => stats.multi += 1,
+                    Assign::Ambiguous => stats.ambiguous += 1,
+                    _ => stats.mismatch += 1,
+                }
+            }
+            out.finish()?;
+            Ok(stats)
+        },
+    )
 }
 
 #[cfg(test)]
