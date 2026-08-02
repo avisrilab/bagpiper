@@ -214,8 +214,8 @@ pub fn run_nanopore(r1: &Path, wl_path: &Path, out_dir: &Path) -> io::Result<Sta
     parallel::run(
         || {
             reader.next().map(|rec| {
-                let rec = rec.expect("invalid FASTQ record");
-                (fastq::read_name(rec.id()).to_vec(), rec.seq().to_vec())
+                rec.map(|r| (fastq::read_name(r.id()).to_vec(), r.seq().to_vec()))
+                    .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
             })
         },
         parallel::default_workers(),
@@ -272,17 +272,22 @@ pub fn run_illumina(r1: &Path, r2: &Path, wl_path: &Path, out_dir: &Path) -> io:
 
     parallel::run(
         || match (r1r.next(), r2r.next()) {
-            (Some(a), Some(b)) => {
-                let a = a.expect("invalid R1 record");
-                let b = b.expect("invalid R2 record");
-                Some((
-                    fastq::read_name(a.id()).to_vec(),
-                    a.seq().to_vec(),
-                    b.seq().to_vec(),
-                ))
-            }
+            (Some(a), Some(b)) => Some(
+                a.and_then(|ra| b.map(|rb| (ra, rb)))
+                    .map(|(ra, rb)| {
+                        (
+                            fastq::read_name(ra.id()).to_vec(),
+                            ra.seq().to_vec(),
+                            rb.seq().to_vec(),
+                        )
+                    })
+                    .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e)),
+            ),
             (None, None) => None,
-            _ => panic!("R1/R2 record count mismatch"),
+            _ => Some(Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "R1/R2 record count mismatch",
+            ))),
         },
         parallel::default_workers(),
         || (),

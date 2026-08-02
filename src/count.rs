@@ -39,7 +39,7 @@ pub fn write_matrix<P: AsRef<Path>>(eq: &EqClass, out_dir: P) -> io::Result<()> 
             while i < mols.len() && mols[i].cell == cell {
                 i += 1;
             }
-            Some((cell, start, i))
+            Some(Ok::<_, io::Error>((cell, start, i)))
         },
         parallel::default_workers(),
         || (vec![0.0f32; n_txp], vec![0.0f32; n_txp]),

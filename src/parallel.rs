@@ -17,20 +17,22 @@ pub fn default_workers() -> usize {
         .unwrap_or(1)
 }
 
-/// Run the feeder-consumer. `feed` runs on the calling thread; `process` on `workers` threads, each
-/// with its own `init` state; `write` on one writer thread, consuming the result receiver and
-/// returning a value that is propagated back to the caller.
-pub fn run<I, O, S, R>(
-    mut feed: impl FnMut() -> Option<I>,
+/// Run the feeder-consumer. `feed` runs on the calling thread and yields `Some(Ok(item))`,
+/// `Some(Err(e))` (abort with that error), or `None` (done); `process` runs on `workers` threads,
+/// each with its own `init` state; `write` runs on one writer thread, consuming the result receiver
+/// and returning `Ok(value)` or an error. A feeder or writer error aborts the run and is returned.
+pub fn run<I, O, S, R, E>(
+    mut feed: impl FnMut() -> Option<Result<I, E>>,
     workers: usize,
     init: impl Fn() -> S + Sync,
     process: impl Fn(&mut S, I) -> O + Sync,
-    write: impl FnOnce(Receiver<O>) -> R + Send,
-) -> R
+    write: impl FnOnce(Receiver<O>) -> Result<R, E> + Send,
+) -> Result<R, E>
 where
     I: Send,
     O: Send,
     R: Send,
+    E: Send,
 {
     let workers = workers.max(1);
     let (item_tx, item_rx) = bounded::<I>(workers * 4);
@@ -56,14 +58,28 @@ where
 
         let writer = s.spawn(move || write(res_rx));
 
-        while let Some(item) = feed() {
-            if item_tx.send(item).is_err() {
-                break;
+        let mut feed_err = None;
+        loop {
+            match feed() {
+                Some(Ok(item)) => {
+                    if item_tx.send(item).is_err() {
+                        break;
+                    }
+                }
+                Some(Err(e)) => {
+                    feed_err = Some(e);
+                    break;
+                }
+                None => break,
             }
         }
         drop(item_tx);
 
-        writer.join().expect("writer thread panicked")
+        let written = writer.join().expect("writer thread panicked");
+        match feed_err {
+            Some(e) => Err(e),
+            None => written,
+        }
     })
 }
 
@@ -75,16 +91,44 @@ mod tests {
     fn processes_every_item_unordered() {
         let mut n = 0u32;
         let sum: u64 = run(
-            || (n < 1000).then(|| {
-                n += 1;
-                n
-            }),
+            || {
+                (n < 1000).then(|| {
+                    n += 1;
+                    Ok::<u32, std::io::Error>(n)
+                })
+            },
             4,
             || (),
             |_: &mut (), x: u32| (x as u64) * (x as u64),
-            |rx: Receiver<u64>| rx.into_iter().sum(),
-        );
+            |rx: Receiver<u64>| Ok(rx.into_iter().sum()),
+        )
+        .unwrap();
         let expect: u64 = (1..=1000u64).map(|x| x * x).sum();
         assert_eq!(sum, expect);
+    }
+
+    #[test]
+    fn feeder_error_aborts_and_propagates() {
+        let mut n = 0u32;
+        let r: Result<(), std::io::Error> = run(
+            || {
+                n += 1;
+                if n == 5 {
+                    Some(Err(std::io::Error::new(std::io::ErrorKind::Other, "boom")))
+                } else if n < 20 {
+                    Some(Ok(n))
+                } else {
+                    None
+                }
+            },
+            4,
+            || (),
+            |_: &mut (), x: u32| x,
+            |rx: Receiver<u32>| {
+                for _ in rx {}
+                Ok(())
+            },
+        );
+        assert!(r.is_err());
     }
 }
