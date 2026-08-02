@@ -1,7 +1,7 @@
 //! Cell-barcode whitelist: exact and edit-1 correction of the four barcode segments.
 //!
 //! Each whitelist segment is stored reverse-complemented, with its full edit-1 neighborhood in a
-//! secondary table. A neighbor shared by two rows resolves to whichever row was loaded last. Lookup
+//! secondary table. A neighbor shared by two rows is marked ambiguous rather than assigned. Lookup
 //! returns the four whitelist rows, which [`crate::seq::CellId::from_rows`] packs into the barcode.
 
 use std::collections::HashMap;
@@ -13,9 +13,16 @@ use crate::seq::revcomp;
 
 /// A segment observed nowhere in the whitelist (not exact, not edit-1).
 pub const NOT_FOUND: u64 = u64::MAX;
+/// A segment edit-1 from two different rows, so not correctable unambiguously.
+pub const AMBIGUOUS: u64 = u64::MAX - 1;
+
+/// True if any resolved segment was left ambiguous (distinguishes ambiguity from a plain miss).
+pub fn is_ambiguous(rows: &[u64]) -> bool {
+    rows.iter().any(|&r| r == AMBIGUOUS)
+}
 
 /// Four-segment PIP-seq whitelist. `primary[i]` maps the reverse-complemented segment i to its row;
-/// `secondary[i]` maps each edit-1 neighbor to its row (last loader wins on a shared neighbor).
+/// `secondary[i]` maps each edit-1 neighbor to its row (or [`AMBIGUOUS`]).
 pub struct Whitelist {
     primary: [HashMap<Vec<u8>, u64>; 4],
     secondary: [HashMap<Vec<u8>, u64>; 4],
@@ -39,7 +46,14 @@ impl Whitelist {
                 let key = revcomp(field.as_bytes());
                 primary[seg].insert(key.clone(), row);
                 for neighbor in edit1_combinations(&key) {
-                    secondary[seg].insert(neighbor, row);
+                    secondary[seg]
+                        .entry(neighbor)
+                        .and_modify(|existing| {
+                            if *existing != row {
+                                *existing = AMBIGUOUS;
+                            }
+                        })
+                        .or_insert(row);
                 }
             }
             row += 1;
@@ -67,7 +81,7 @@ impl Whitelist {
 
 /// All strings within edit distance 1 of `s` (deletions, insertions, substitutions), plus the
 /// length-restored variants the reference generates so an indel'd read still matches. Duplicates are
-/// harmless: the last insertion into the secondary table wins.
+/// harmless: the secondary table folds them under the ambiguity guard.
 fn edit1_combinations(s: &[u8]) -> Vec<Vec<u8>> {
     const NTS: [u8; 4] = [b'A', b'T', b'C', b'G'];
     let mut out = Vec::new();
@@ -175,6 +189,28 @@ mod tests {
         let mut junk = stored("AAAAAAAA", "AAAAAA", "CCCCCC", "CCCCCCCC");
         junk[0] = b"ACGTACGT".to_vec();
         assert_eq!(wl.resolve(refs(&junk))[0], NOT_FOUND);
+
+        let _ = std::fs::remove_file(&p);
+    }
+
+    #[test]
+    fn edit1_ambiguity_is_rejected() {
+        // row 0 bc1 revcomp = GGGGGGGG, row 1 bc1 revcomp = TGGGGGGG; "AGGGGGGG" is edit-1 from both
+        // and exact-matches neither -> ambiguous.
+        let p = write_wl(
+            "ambig",
+            &[
+                ["AAAAAAAA", "AAAAAA", "CCCCCC", "CCCCCCCC"], // row 0
+                ["GGGGGGGG", "GGGGGG", "TTTTTT", "CCCCCCCA"], // row 1
+            ],
+        );
+        let wl = Whitelist::from_csv(&p).unwrap();
+
+        let mut q = stored("AAAAAAAA", "AAAAAA", "CCCCCC", "CCCCCCCC");
+        q[0] = b"AGGGGGGG".to_vec();
+        let got = wl.resolve(refs(&q));
+        assert_eq!(got[0], AMBIGUOUS);
+        assert_eq!(&got[1..], &[0, 0, 0]);
 
         let _ = std::fs::remove_file(&p);
     }

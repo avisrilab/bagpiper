@@ -1,6 +1,6 @@
 [package]
 name = "bagpiper"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 authors = ["Avi Srivastava <avisrilab@gmail.com>"]
 description = "A suite of tools for rapid analysis of PIP-seq data."

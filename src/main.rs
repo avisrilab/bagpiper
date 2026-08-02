@@ -60,8 +60,8 @@ fn main() -> std::io::Result<()> {
                 bagpiper::barcode::run_illumina(&r1, &r2, &whitelist, &output)?
             };
             eprintln!(
-                "Total: {}  Matched: {}  Small: {}  Mismatch: {}",
-                stats.total, stats.matched, stats.small, stats.mismatch
+                "Total: {}  Matched: {}  Small: {}  Ambiguous: {}  Mismatch: {}",
+                stats.total, stats.matched, stats.small, stats.ambiguous, stats.mismatch
             );
         }
         Cmd::Count { b1, output } => {

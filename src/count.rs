@@ -46,11 +46,7 @@ pub fn write_matrix<P: AsRef<Path>>(eq: &EqClass, out_dir: P) -> io::Result<()> 
         |(alphas, scratch): &mut (Vec<f32>, Vec<f32>), (cell, start, end): (CellId, usize, usize)| {
             let mut eqmap: BTreeMap<Vec<u32>, u32> = BTreeMap::new();
             for m in &mols[start..end] {
-                // The eqclass key is the transcript SET: sort here (molecules carry alignment
-                // order, which dedup treated as significant) so equal sets collapse to one class.
-                let mut key = m.txps.clone();
-                key.sort_unstable();
-                *eqmap.entry(key).or_insert(0) += 1;
+                *eqmap.entry(m.txps.clone()).or_insert(0) += 1;
             }
             alphas.iter_mut().for_each(|a| *a = 0.0);
             em::optimize(&eqmap, &txp_lengths, alphas, scratch);

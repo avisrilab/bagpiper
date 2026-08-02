@@ -8,10 +8,8 @@ use noodles::bam;
 
 use crate::seq::{CellId, Umi};
 
-/// One molecule: cell, UMI, and its aligned transcript ids in BAM (alignment) order. Exact equality
-/// of all three fields, transcript order included, defines a PCR duplicate: the reference dedup is a
-/// whole-line string match, so two reads of one molecule whose shared transcript set is listed in a
-/// different order are kept as distinct molecules.
+/// One molecule: cell, UMI, and its transcript-id set (sorted, reference order). Exact equality of
+/// all three fields defines a PCR duplicate.
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct Molecule {
     pub cell: CellId,
@@ -40,7 +38,7 @@ pub struct EqClass {
 
 impl EqClass {
     /// Write the text form: transcript count, one `name\tlength` line per transcript, then one
-    /// `CB\tUMI\ttxp...` line per molecule with transcripts named in alignment order.
+    /// `CB\tUMI\ttxp...` line per molecule with transcripts named in reference order.
     pub fn write_text<W: Write>(&self, out: &mut W) -> io::Result<()> {
         writeln!(out, "{}", self.transcripts.len())?;
         for (name, len) in &self.transcripts {
@@ -59,7 +57,7 @@ impl EqClass {
 
 /// Build the eqclass from a name-grouped BAM. Reads are grouped by name; supplementary alignments
 /// are ignored; a group whose first non-supplementary alignment is unmapped is dropped. The
-/// transcript ids of the remaining alignments are recorded in BAM (alignment) order.
+/// transcript-id set of the remaining alignments is sorted into the molecule.
 pub fn read_bam<P: AsRef<Path>>(path: P) -> io::Result<EqClass> {
     let mut reader = File::open(path).map(bam::io::Reader::new)?;
     let header = reader.read_header()?;
@@ -130,9 +128,8 @@ fn flush_group(
         Some(key) => key,
         None => return,
     };
-    // Alignment order, unsorted: dedup keys on the whole molecule (order included), matching the
-    // reference. The transcript set is sorted only later, when count builds the eqclass key.
-    let txps = std::mem::take(tids);
+    let mut txps = std::mem::take(tids);
+    txps.sort_unstable();
     out.push(Molecule { cell, umi, txps });
 }
 
