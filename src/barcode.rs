@@ -18,10 +18,11 @@ use crate::fastq;
 use crate::parallel;
 use crate::seal;
 use crate::seq::{revcomp, CellId};
-use crate::whitelist::{is_ambiguous, Whitelist};
+use crate::whitelist::Whitelist;
 
 /// Outcome of assigning one read (pair). On the non-polyA strand (`is_polya` false) the driver
-/// reverse-complements the UMI and cDNA so all output lands on one strand.
+/// reverse-complements the cDNA onto the polyA strand; the UMI is written as captured (matching the
+/// reference, which orients only the cDNA).
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum Assign {
     Matched {
@@ -34,80 +35,55 @@ pub enum Assign {
     NoRegex,
     MultiRegex,
     Mismatch,
-    Ambiguous,
 }
 
 const MIN_READ_LEN: usize = 40;
 const MIN_CDNA_LEN: usize = 50;
 
-/// Per-stage result inside the nanopore cascade: assigned (stop), ambiguous (remember, keep trying),
-/// or a miss (keep trying).
-enum Stage {
-    Matched(Assign),
-    Ambiguous,
-    Miss,
-}
-
 /// Resolve the four captured segments to a CellId, reverse-complementing the observed segments on
-/// the forward strand (matching the reference). Err(true) = ambiguous, Err(false) = not found.
-fn resolve(caps: &regex::Captures, wl: &Whitelist, is_forward: bool) -> Result<CellId, bool> {
+/// the forward strand (matching the reference). None if any segment is absent from the whitelist.
+fn resolve(caps: &regex::Captures, wl: &Whitelist, is_forward: bool) -> Option<CellId> {
     let orient = |b: &[u8]| if is_forward { revcomp(b) } else { b.to_vec() };
     let seg = |n: &str| orient(caps.name(n).unwrap().as_str().as_bytes());
     let owned = [seg("bc1"), seg("bc2"), seg("bc3"), seg("bc4")];
     let rows = wl.resolve([&owned[0], &owned[1], &owned[2], &owned[3]]);
-    CellId::from_rows(rows).ok_or_else(|| is_ambiguous(&rows))
+    CellId::from_rows(rows)
 }
 
 /// One regex stage: single match, cDNA length floor, whitelist resolution. `is_forward` sets both
-/// the barcode orientation and the returned strand (reverse strand carries the polyA).
-fn regex_stage(re: &Regex, wl: &Whitelist, read: &str, is_forward: bool) -> Stage {
+/// the barcode orientation and the returned strand (reverse strand carries the polyA). None on any
+/// miss: no match, more than one placement, short cDNA, or an off-whitelist barcode.
+fn regex_stage(re: &Regex, wl: &Whitelist, read: &str, is_forward: bool) -> Option<Assign> {
     let mut it = re.captures_iter(read);
-    let caps = match it.next() {
-        Some(c) => c,
-        None => return Stage::Miss,
-    };
+    let caps = it.next()?;
     if it.next().is_some() {
-        return Stage::Miss; // more than one placement
+        return None; // more than one placement
     }
     let cdna = caps.name("seq").unwrap().as_str().as_bytes();
     if cdna.len() < MIN_CDNA_LEN {
-        return Stage::Miss;
+        return None;
     }
-    match resolve(&caps, wl, is_forward) {
-        Ok(cell) => Stage::Matched(Assign::Matched {
-            cell,
-            umi: caps.name("umi").unwrap().as_str().as_bytes().to_vec(),
-            cdna: cdna.to_vec(),
-            is_polya: !is_forward,
-        }),
-        Err(true) => Stage::Ambiguous,
-        Err(false) => Stage::Miss,
-    }
+    let cell = resolve(&caps, wl, is_forward)?;
+    Some(Assign::Matched {
+        cell,
+        umi: caps.name("umi").unwrap().as_str().as_bytes().to_vec(),
+        cdna: cdna.to_vec(),
+        is_polya: !is_forward,
+    })
 }
 
 /// One SW-seal stage on `read` (already in the orientation to search). The seal barcodes are used in
-/// stored orientation (no revcomp), matching the reference `get_long_cb_from_string`.
-fn seal_stage(read: &[u8], wl: &Whitelist) -> Stage {
-    let (bc, umi, cdna) = match seal::seal_extraction(read) {
-        Some(x) => x,
-        None => return Stage::Miss,
-    };
+/// stored orientation (no revcomp), matching the reference `get_long_cb_from_string`. None on a miss.
+fn seal_stage(read: &[u8], wl: &Whitelist) -> Option<Assign> {
+    let (bc, umi, cdna) = seal::seal_extraction(read)?;
     let rows = wl.resolve([&bc[0], &bc[1], &bc[2], &bc[3]]);
-    match CellId::from_rows(rows) {
-        Some(cell) => Stage::Matched(Assign::Matched {
-            cell,
-            umi,
-            cdna,
-            is_polya: true,
-        }),
-        None => {
-            if is_ambiguous(&rows) {
-                Stage::Ambiguous
-            } else {
-                Stage::Miss
-            }
-        }
-    }
+    let cell = CellId::from_rows(rows)?;
+    Some(Assign::Matched {
+        cell,
+        umi,
+        cdna,
+        is_polya: true,
+    })
 }
 
 /// Assign one nanopore read: reverse regex, forward regex, seal(read), seal(revcomp).
@@ -116,30 +92,21 @@ pub fn assign_nanopore(read: &[u8], rev_re: &Regex, fwd_re: &Regex, wl: &Whiteli
         return Assign::Small;
     }
     let s = std::str::from_utf8(read).expect("read is ACGT");
-    let mut ambiguous = false;
 
     for (re, is_forward) in [(rev_re, false), (fwd_re, true)] {
-        match regex_stage(re, wl, s, is_forward) {
-            Stage::Matched(a) => return a,
-            Stage::Ambiguous => ambiguous = true,
-            Stage::Miss => {}
+        if let Some(a) = regex_stage(re, wl, s, is_forward) {
+            return a;
         }
     }
 
     let rc = revcomp(read);
     for cand in [read, &rc[..]] {
-        match seal_stage(cand, wl) {
-            Stage::Matched(a) => return a,
-            Stage::Ambiguous => ambiguous = true,
-            Stage::Miss => {}
+        if let Some(a) = seal_stage(cand, wl) {
+            return a;
         }
     }
 
-    if ambiguous {
-        Assign::Ambiguous
-    } else {
-        Assign::Mismatch
-    }
+    Assign::Mismatch
 }
 
 /// Assign one illumina pair: match the reverse-strand regex on revcomp(R1), correct the barcode, and
@@ -156,14 +123,13 @@ pub fn assign_illumina(r1: &[u8], r2: &[u8], rev_re: &Regex, wl: &Whitelist) -> 
         return Assign::MultiRegex;
     }
     match resolve(&caps, wl, true) {
-        Ok(cell) => Assign::Matched {
+        Some(cell) => Assign::Matched {
             cell,
             umi: caps.name("umi").unwrap().as_str().as_bytes().to_vec(),
             cdna: r2.to_vec(),
             is_polya: true,
         },
-        Err(true) => Assign::Ambiguous,
-        Err(false) => Assign::Mismatch,
+        None => Assign::Mismatch,
     }
 }
 
@@ -175,7 +141,6 @@ pub struct Stats {
     pub small: u64,
     pub no_regex: u64,
     pub multi: u64,
-    pub ambiguous: u64,
     pub mismatch: u64,
 }
 
@@ -232,21 +197,15 @@ pub fn run_nanopore(r1: &Path, wl_path: &Path, out_dir: &Path) -> io::Result<Sta
                 stats.total += 1;
                 match a {
                     Assign::Matched { cell, umi, cdna, is_polya } => {
-                        if is_polya {
-                            write_fasta(&mut passed, &record_id(&name, cell, &umi), &cdna)?;
-                        } else {
-                            let (umi, cdna) = (revcomp(&umi), revcomp(&cdna));
-                            write_fasta(&mut passed, &record_id(&name, cell, &umi), &cdna)?;
-                        }
+                        // Reference writes the UMI as captured on whichever strand matched; only the
+                        // cDNA is reverse-complemented onto the polyA strand.
+                        let cdna = if is_polya { cdna } else { revcomp(&cdna) };
+                        write_fasta(&mut passed, &record_id(&name, cell, &umi), &cdna)?;
                         stats.matched += 1;
                     }
                     Assign::Small => {
                         write_fasta(&mut failed, &name, &seq)?;
                         stats.small += 1;
-                    }
-                    Assign::Ambiguous => {
-                        write_fasta(&mut failed, &name, &seq)?;
-                        stats.ambiguous += 1;
                     }
                     _ => {
                         write_fasta(&mut failed, &name, &seq)?;
@@ -307,7 +266,6 @@ pub fn run_illumina(r1: &Path, r2: &Path, wl_path: &Path, out_dir: &Path) -> io:
                     }
                     Assign::NoRegex => stats.no_regex += 1,
                     Assign::MultiRegex => stats.multi += 1,
-                    Assign::Ambiguous => stats.ambiguous += 1,
                     _ => stats.mismatch += 1,
                 }
             }
