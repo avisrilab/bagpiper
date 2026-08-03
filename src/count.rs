@@ -7,6 +7,7 @@ use std::path::Path;
 
 use flate2::write::GzEncoder;
 use flate2::Compression;
+use log::info;
 
 use crate::em;
 use crate::eqclass::EqClass;
@@ -59,7 +60,13 @@ pub fn write_matrix<P: AsRef<Path>>(eq: &EqClass, out_dir: P) -> io::Result<()> 
             (cell.render(), triplets)
         },
         move |rx| -> io::Result<()> {
-            let results: Vec<(String, Vec<(u32, f32)>)> = rx.into_iter().collect();
+            let mut results: Vec<(String, Vec<(u32, f32)>)> = Vec::new();
+            for cell in rx {
+                results.push(cell);
+                if results.len() % 50_000 == 0 {
+                    info!("counted {} cells", results.len());
+                }
+            }
 
             let mut barcodes = gz(out_dir.join("barcodes.tsv.gz"))?;
             for (bc, _) in &results {

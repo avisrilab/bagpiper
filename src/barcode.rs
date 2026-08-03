@@ -11,6 +11,7 @@ use std::path::Path;
 
 use flate2::write::GzEncoder;
 use flate2::Compression;
+use log::info;
 use regex::Regex;
 
 use crate::chemistry::Chemistry;
@@ -230,6 +231,9 @@ pub fn run_nanopore(r1: &Path, wl_path: &Path, out_dir: &Path) -> io::Result<Sta
             let mut stats = Stats::default();
             for (name, seq, a) in rx {
                 stats.total += 1;
+                if stats.total % 1_000_000 == 0 {
+                    info!("barcoded {}M reads", stats.total / 1_000_000);
+                }
                 match a {
                     Assign::Matched { cell, umi, cdna, is_polya } => {
                         if is_polya {
@@ -300,6 +304,9 @@ pub fn run_illumina(r1: &Path, r2: &Path, wl_path: &Path, out_dir: &Path) -> io:
             let mut stats = Stats::default();
             for (name, a) in rx {
                 stats.total += 1;
+                if stats.total % 1_000_000 == 0 {
+                    info!("barcoded {}M reads", stats.total / 1_000_000);
+                }
                 match a {
                     Assign::Matched { cell, umi, cdna, .. } => {
                         write_fasta(&mut out, &record_id(&name, cell, &umi), &cdna)?;
