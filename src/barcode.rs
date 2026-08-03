@@ -5,12 +5,9 @@
 //! the cDNA from R2. This module returns the assignment; the I/O driver writes it and normalizes the
 //! strand.
 
-use std::fs::File;
-use std::io::{self, BufWriter, Write};
+use std::io;
 use std::path::Path;
 
-use flate2::write::GzEncoder;
-use flate2::Compression;
 use log::info;
 use regex::Regex;
 
@@ -180,18 +177,6 @@ pub struct Stats {
     pub mismatch: u64,
 }
 
-fn gz_writer(path: std::path::PathBuf) -> io::Result<GzEncoder<BufWriter<File>>> {
-    Ok(GzEncoder::new(BufWriter::new(File::create(path)?), Compression::default()))
-}
-
-fn write_fasta<W: Write>(w: &mut W, id: &[u8], seq: &[u8]) -> io::Result<()> {
-    w.write_all(b">")?;
-    w.write_all(id)?;
-    w.write_all(b"\n")?;
-    w.write_all(seq)?;
-    w.write_all(b"\n")
-}
-
 fn record_id(name: &[u8], cell: CellId, umi: &[u8]) -> Vec<u8> {
     let mut id = name.to_vec();
     id.push(b'_');
@@ -208,8 +193,8 @@ pub fn run_nanopore(r1: &Path, wl_path: &Path, out_dir: &Path) -> io::Result<Sta
     let wl = Whitelist::from_csv(wl_path)?;
     let rev = Chemistry::PipV4.barcode_regex(true);
     let fwd = Chemistry::PipV4.barcode_regex(false);
-    let passed = gz_writer(out_dir.join("passed.bcd.nanopore.fa.gz"))?;
-    let failed = gz_writer(out_dir.join("failed.bcd.nanopore.fa.gz"))?;
+    let passed = fastq::gz_writer(out_dir.join("passed.bcd.nanopore.fa.gz"))?;
+    let failed = fastq::gz_writer(out_dir.join("failed.bcd.nanopore.fa.gz"))?;
     let mut reader = fastq::open_gz(r1)?;
 
     parallel::run(
@@ -235,25 +220,30 @@ pub fn run_nanopore(r1: &Path, wl_path: &Path, out_dir: &Path) -> io::Result<Sta
                     info!("barcoded {}M reads", stats.total / 1_000_000);
                 }
                 match a {
-                    Assign::Matched { cell, umi, cdna, is_polya } => {
+                    Assign::Matched {
+                        cell,
+                        umi,
+                        cdna,
+                        is_polya,
+                    } => {
                         if is_polya {
-                            write_fasta(&mut passed, &record_id(&name, cell, &umi), &cdna)?;
+                            fastq::write_fasta(&mut passed, &record_id(&name, cell, &umi), &cdna)?;
                         } else {
                             let (umi, cdna) = (revcomp(&umi), revcomp(&cdna));
-                            write_fasta(&mut passed, &record_id(&name, cell, &umi), &cdna)?;
+                            fastq::write_fasta(&mut passed, &record_id(&name, cell, &umi), &cdna)?;
                         }
                         stats.matched += 1;
                     }
                     Assign::Small => {
-                        write_fasta(&mut failed, &name, &seq)?;
+                        fastq::write_fasta(&mut failed, &name, &seq)?;
                         stats.small += 1;
                     }
                     Assign::Ambiguous => {
-                        write_fasta(&mut failed, &name, &seq)?;
+                        fastq::write_fasta(&mut failed, &name, &seq)?;
                         stats.ambiguous += 1;
                     }
                     _ => {
-                        write_fasta(&mut failed, &name, &seq)?;
+                        fastq::write_fasta(&mut failed, &name, &seq)?;
                         stats.mismatch += 1;
                     }
                 }
@@ -270,7 +260,7 @@ pub fn run_nanopore(r1: &Path, wl_path: &Path, out_dir: &Path) -> io::Result<Sta
 pub fn run_illumina(r1: &Path, r2: &Path, wl_path: &Path, out_dir: &Path) -> io::Result<Stats> {
     let wl = Whitelist::from_csv(wl_path)?;
     let rev = Chemistry::PipV4.barcode_regex(true);
-    let out = gz_writer(out_dir.join("read.bcd.illumina.fa.gz"))?;
+    let out = fastq::gz_writer(out_dir.join("read.bcd.illumina.fa.gz"))?;
     let mut r1r = fastq::open_gz(r1)?;
     let mut r2r = fastq::open_gz(r2)?;
 
@@ -308,8 +298,10 @@ pub fn run_illumina(r1: &Path, r2: &Path, wl_path: &Path, out_dir: &Path) -> io:
                     info!("barcoded {}M reads", stats.total / 1_000_000);
                 }
                 match a {
-                    Assign::Matched { cell, umi, cdna, .. } => {
-                        write_fasta(&mut out, &record_id(&name, cell, &umi), &cdna)?;
+                    Assign::Matched {
+                        cell, umi, cdna, ..
+                    } => {
+                        fastq::write_fasta(&mut out, &record_id(&name, cell, &umi), &cdna)?;
                         stats.matched += 1;
                     }
                     Assign::NoRegex => stats.no_regex += 1,
@@ -372,8 +364,17 @@ mod tests {
         );
 
         match assign_nanopore(read.as_bytes(), &rev, &fwd, &wl) {
-            Assign::Matched { cell, umi: u, cdna, is_polya } => {
-                assert_eq!(cell.render(), "A".repeat(16), "row 0 in every segment -> all-A barcode");
+            Assign::Matched {
+                cell,
+                umi: u,
+                cdna,
+                is_polya,
+            } => {
+                assert_eq!(
+                    cell.render(),
+                    "A".repeat(16),
+                    "row 0 in every segment -> all-A barcode"
+                );
                 assert_eq!(u, umi.as_bytes());
                 assert_eq!(cdna, "A".repeat(55).as_bytes());
                 assert!(is_polya, "reverse strand carries the polyA");
@@ -390,8 +391,18 @@ mod tests {
         let rev = Chemistry::PipV4.barcode_regex(true);
         let fwd = Chemistry::PipV4.barcode_regex(false);
         // bc1 = ACGTACGT is neither exact nor edit-1 of the single row.
-        let read = reverse_read(&"A".repeat(55), "ACACACGTGTGT", "TTTTTTTT", "TTTTTT", "GGGGGG", "ACGTACGT");
-        assert_eq!(assign_nanopore(read.as_bytes(), &rev, &fwd, &wl), Assign::Mismatch);
+        let read = reverse_read(
+            &"A".repeat(55),
+            "ACACACGTGTGT",
+            "TTTTTTTT",
+            "TTTTTT",
+            "GGGGGG",
+            "ACGTACGT",
+        );
+        assert_eq!(
+            assign_nanopore(read.as_bytes(), &rev, &fwd, &wl),
+            Assign::Mismatch
+        );
         let _ = std::fs::remove_file(&p);
     }
 
@@ -401,7 +412,10 @@ mod tests {
         let wl = Whitelist::from_csv(&p).unwrap();
         let rev = Chemistry::PipV4.barcode_regex(true);
         let fwd = Chemistry::PipV4.barcode_regex(false);
-        assert_eq!(assign_nanopore(b"ACGTACGTACGT", &rev, &fwd, &wl), Assign::Small);
+        assert_eq!(
+            assign_nanopore(b"ACGTACGTACGT", &rev, &fwd, &wl),
+            Assign::Small
+        );
         let _ = std::fs::remove_file(&p);
     }
 }

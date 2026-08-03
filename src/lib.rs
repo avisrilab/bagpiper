@@ -13,12 +13,13 @@ pub mod logging;
 // Chemistry (read layouts behind a seam)
 pub mod chemistry;
 
-// Pipeline stages
+// Pipeline stages (in flow order)
 pub mod barcode; // FASTQ -> assigned CB/UMI + cDNA
 pub mod seal; // Smith-Waterman barcode rescue
 pub mod tso; // V5 5' dual-UMI seal
 pub mod align; // embedded minimap2: reads + reference -> eqclass
 pub mod eqclass; // BAM -> packed molecules
 pub mod dedup; // exact PCR dedup
+pub mod collapse; // v5 guarded-BIN-id molecule merge
 pub mod em; // length-weighted EM
 pub mod count; // molecules -> count matrix

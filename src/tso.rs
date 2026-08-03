@@ -4,12 +4,9 @@
 //! rejects spurious low-score seals. The extracted read id gains `_umi1_umi2` so the V5 eqclass key
 //! is `CB + umi1umi2`.
 
-use std::fs::File;
-use std::io::{self, BufWriter, Write};
+use std::io;
 use std::path::Path;
 
-use flate2::write::GzEncoder;
-use flate2::Compression;
 use log::info;
 
 use crate::fastq;
@@ -68,23 +65,11 @@ pub struct Stats {
     pub far_seal: u64, // subset of matched: seal started past FAR_SEAL_START (possible chimera)
 }
 
-fn gz_writer(path: std::path::PathBuf) -> io::Result<GzEncoder<BufWriter<File>>> {
-    Ok(GzEncoder::new(BufWriter::new(File::create(path)?), Compression::default()))
-}
-
-fn write_fasta<W: Write>(w: &mut W, id: &[u8], seq: &[u8]) -> io::Result<()> {
-    w.write_all(b">")?;
-    w.write_all(id)?;
-    w.write_all(b"\n")?;
-    w.write_all(seq)?;
-    w.write_all(b"\n")
-}
-
 /// Extract the 5' UMI from each barcoded read, writing `>origid_CB_UMI_umi1_umi2` + trimmed cDNA to
 /// the passed sink and unassigned reads unchanged to the failed sink.
 pub fn run_tso(r1: &Path, out_dir: &Path) -> io::Result<Stats> {
-    let passed = gz_writer(out_dir.join("passed.tso.nanopore.fa.gz"))?;
-    let failed = gz_writer(out_dir.join("failed.tso.nanopore.fa.gz"))?;
+    let passed = fastq::gz_writer(out_dir.join("passed.tso.nanopore.fa.gz"))?;
+    let failed = fastq::gz_writer(out_dir.join("failed.tso.nanopore.fa.gz"))?;
     let mut reader = fastq::open_gz(r1)?;
 
     parallel::run(
@@ -116,16 +101,16 @@ pub fn run_tso(r1: &Path, out_dir: &Path) -> io::Result<Stats> {
                         id.extend_from_slice(&umi1);
                         id.push(b'_');
                         id.extend_from_slice(&umi2);
-                        write_fasta(&mut passed, &id, &txp)?;
+                        fastq::write_fasta(&mut passed, &id, &txp)?;
                         stats.matched += 1;
                         stats.far_seal += (seal_start > FAR_SEAL_START) as u64;
                     }
                     _ if seq.len() < MIN_READ_LEN => {
-                        write_fasta(&mut failed, &name, &seq)?;
+                        fastq::write_fasta(&mut failed, &name, &seq)?;
                         stats.small += 1;
                     }
                     _ => {
-                        write_fasta(&mut failed, &name, &seq)?;
+                        fastq::write_fasta(&mut failed, &name, &seq)?;
                         stats.no_seal += 1;
                     }
                 }

@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::{self, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use flate2::write::GzEncoder;
 use flate2::Compression;
@@ -13,6 +13,55 @@ use crate::em;
 use crate::eqclass::EqClass;
 use crate::parallel;
 use crate::seq::CellId;
+
+/// Where `count` sources its aligned reads.
+pub enum Source {
+    /// A pre-aligned, name-grouped BAM.
+    Bam(PathBuf),
+    /// Barcoded reads aligned internally against a transcriptome.
+    Align { reads: PathBuf, reference: PathBuf },
+}
+
+/// Molecule counts through the pipeline, for the run log.
+pub struct Counts {
+    pub transcripts: usize,
+    pub raw: usize,
+    pub deduped: usize,
+    pub final_molecules: usize,
+}
+
+/// The count pipeline in one call: build the eqclass (from a BAM or by aligning internally),
+/// exact-dedup, optionally run the guarded-BIN-id collapse, then write the matrix. `collapse` is
+/// `Some((t2g, threshold))` to enable it, which also packs the V5 binning index onto the molecular
+/// key (the collapse consumes it).
+pub fn run(
+    source: Source,
+    collapse: Option<(PathBuf, usize)>,
+    out_dir: &Path,
+) -> io::Result<Counts> {
+    let v5_binid = collapse.is_some();
+    let mut eq = match source {
+        Source::Bam(b1) => crate::eqclass::read_bam(&b1, v5_binid)?,
+        Source::Align { reads, reference } => {
+            crate::align::align_to_eqclass(&reads, &reference, v5_binid)?
+        }
+    };
+    let raw = eq.molecules.len();
+    crate::dedup::exact(&mut eq.molecules);
+    let deduped = eq.molecules.len();
+    if let Some((t2g, threshold)) = collapse {
+        let map = crate::collapse::load_t2g(&t2g)?;
+        crate::collapse::collapse(&mut eq, &map, threshold);
+    }
+    let final_molecules = eq.molecules.len();
+    write_matrix(&eq, out_dir)?;
+    Ok(Counts {
+        transcripts: eq.transcripts.len(),
+        raw,
+        deduped,
+        final_molecules,
+    })
+}
 
 /// Write gzipped `matrix.mtx.gz` (cells x transcripts, MatrixMarket coordinate real general),
 /// `barcodes.tsv.gz` (one rendered cell barcode per row), and `features.tsv.gz` (transcript names
@@ -44,7 +93,8 @@ pub fn write_matrix<P: AsRef<Path>>(eq: &EqClass, out_dir: P) -> io::Result<()> 
         },
         parallel::default_workers(),
         || (vec![0.0f32; n_txp], vec![0.0f32; n_txp]),
-        |(alphas, scratch): &mut (Vec<f32>, Vec<f32>), (cell, start, end): (CellId, usize, usize)| {
+        |(alphas, scratch): &mut (Vec<f32>, Vec<f32>),
+         (cell, start, end): (CellId, usize, usize)| {
             let mut eqmap: BTreeMap<Vec<u32>, u32> = BTreeMap::new();
             for m in &mols[start..end] {
                 *eqmap.entry(m.txps.clone()).or_insert(0) += 1;
@@ -154,7 +204,74 @@ mod tests {
         let dims: Vec<&str> = lines[2].split('\t').collect();
         assert_eq!((dims[0], dims[1]), ("2", "2"), "2 cells x 2 transcripts");
         let declared_nnz: usize = dims[2].parse().unwrap();
-        assert_eq!(declared_nnz, lines.len() - 3, "declared nnz equals actual triplet lines");
+        assert_eq!(
+            declared_nnz,
+            lines.len() - 3,
+            "declared nnz equals actual triplet lines"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Deterministic high-complexity ACGT so minimap2 seeds cleanly (no external randomness).
+    fn synth(seed: u64, n: usize) -> String {
+        const B: [u8; 4] = [b'A', b'C', b'G', b'T'];
+        let mut x = seed;
+        (0..n)
+            .map(|_| {
+                x = x
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
+                B[((x >> 33) & 3) as usize] as char
+            })
+            .collect()
+    }
+
+    #[test]
+    fn run_collapse_merges_over_split_v5_umis() {
+        // End to end via the align path: three V5 reads of TXP0 in one cell. r1,r2 share BIN-id ACG
+        // (distinct 5' UMIs), r3 has TGC. With --collapse (T=50) the two ACG reads merge -> 2 mols.
+        let dir = std::env::temp_dir().join(format!("bp_run_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let (txp0, txp1) = (synth(1, 600), synth(2, 600));
+        let refp = dir.join("ref.fa");
+        std::fs::write(&refp, format!(">TXP0\n{txp0}\n>TXP1\n{txp1}\n")).unwrap();
+        let t2gp = dir.join("t2g.tsv");
+        std::fs::write(&t2gp, "TXP0\tGENE_A\nTXP1\tGENE_B\n").unwrap();
+
+        let cb = "AAACGTTGCAGAACAC";
+        let reads = format!(
+            ">r1_{cb}_AAAAAAAAAACG_AAAAAA_CCCCCC\n{txp0}\n\
+             >r2_{cb}_AAAAAAAAAACG_GGGGGG_TTTTTT\n{txp0}\n\
+             >r3_{cb}_AAAAAAAAATGC_AAAAAA_CCCCCC\n{txp0}\n"
+        );
+        let readsp = dir.join("reads.fa.gz");
+        let mut gz = GzEncoder::new(File::create(&readsp).unwrap(), Compression::default());
+        gz.write_all(reads.as_bytes()).unwrap();
+        gz.finish().unwrap();
+
+        let c = run(
+            Source::Align {
+                reads: readsp,
+                reference: refp,
+            },
+            Some((t2gp, 50)),
+            &dir,
+        )
+        .unwrap();
+        assert_eq!(c.raw, 3);
+        assert_eq!(c.deduped, 3, "distinct 15 nt binid keys keep all three");
+        assert_eq!(
+            c.final_molecules, 2,
+            "collapse merges the two ACG reads into one"
+        );
+        assert_eq!(
+            read_gz(dir.join("barcodes.tsv.gz")).lines().count(),
+            1,
+            "one cell"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }

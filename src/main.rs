@@ -46,9 +46,15 @@ enum Cmd {
         /// output directory
         #[arg(short, long)]
         output: PathBuf,
-        /// V5: pack the 3 bp binning index onto the molecular key (for the opt-in collapse stage)
+        /// V5: run the guarded-BIN-id collapse (requires --t2g); implies packing the BIN-id key
         #[arg(long)]
-        v5_binid: bool,
+        collapse: bool,
+        /// transcript->gene TSV for --collapse
+        #[arg(long)]
+        t2g: Option<PathBuf>,
+        /// --collapse guard: BIN-merge only where a cell-gene has <= T distinct 5' UMIs
+        #[arg(long, default_value_t = 50)]
+        collapse_t: usize,
     },
     /// Extract the V5 5' dual-UMI (TSO seal) from barcoded reads, writing
     /// `>origid_CB_UMI_umi1_umi2` + trimmed cDNA. Run after `barcode`, before alignment, for V5.
@@ -82,7 +88,10 @@ fn main() -> std::io::Result<()> {
                 bagpiper::barcode::run_nanopore(&r1, &whitelist, &output)?
             } else {
                 let r2 = r2.ok_or_else(|| {
-                    std::io::Error::new(std::io::ErrorKind::InvalidInput, "illumina mode needs --r2")
+                    std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        "illumina mode needs --r2",
+                    )
                 })?;
                 bagpiper::barcode::run_illumina(&r1, &r2, &whitelist, &output)?
             };
@@ -96,18 +105,16 @@ fn main() -> std::io::Result<()> {
             r1,
             reference,
             output,
-            v5_binid,
+            collapse,
+            t2g,
+            collapse_t,
         } => {
             std::fs::create_dir_all(&output)?;
             bagpiper::logging::init(&output, "count")?;
-            let mut eq = match (b1, r1, reference) {
-                (Some(b1), None, None) => {
-                    info!("count b1={} v5_binid={}", b1.display(), v5_binid);
-                    bagpiper::eqclass::read_bam(&b1, v5_binid)?
-                }
-                (None, Some(r1), Some(reference)) => {
-                    info!("count align r1={} ref={}", r1.display(), reference.display());
-                    bagpiper::align::align_to_eqclass(&r1, &reference, v5_binid)?
+            let source = match (b1, r1, reference) {
+                (Some(b1), None, None) => bagpiper::count::Source::Bam(b1),
+                (None, Some(reads), Some(reference)) => {
+                    bagpiper::count::Source::Align { reads, reference }
                 }
                 _ => {
                     return Err(std::io::Error::new(
@@ -116,14 +123,25 @@ fn main() -> std::io::Result<()> {
                     ))
                 }
             };
-            let raw = eq.molecules.len();
-            bagpiper::dedup::exact(&mut eq.molecules);
-            bagpiper::count::write_matrix(&eq, &output)?;
+            let collapse_cfg = if collapse {
+                let t2g = t2g.ok_or_else(|| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        "--collapse requires --t2g",
+                    )
+                })?;
+                Some((t2g, collapse_t))
+            } else {
+                None
+            };
+            info!("count collapse={}", collapse);
+            let c = bagpiper::count::run(source, collapse_cfg, &output)?;
             info!(
-                "transcripts {}  molecules {} -> deduped {}  output {}",
-                eq.transcripts.len(),
-                raw,
-                eq.molecules.len(),
+                "transcripts {}  molecules {} -> deduped {} -> final {}  output {}",
+                c.transcripts,
+                c.raw,
+                c.deduped,
+                c.final_molecules,
                 output.display()
             );
         }
