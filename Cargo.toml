@@ -25,6 +25,7 @@ crossbeam-channel = "0.5.16"
 flate2 = "1.1.9"
 humantime = "2.4"
 log = { version = "0.4", features = ["std"] }
+minimap2 = "0.1.31"
 needletail = { version = "0.6.3", default-features = false }
 noodles = { version = "0.114.0", features = ["bam", "sam", "bgzf"] }
 regex = "1.13.1"

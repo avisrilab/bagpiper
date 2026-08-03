@@ -30,12 +30,19 @@ enum Cmd {
         #[arg(long)]
         nanopore: bool,
     },
-    /// Count matrix from a name-grouped BAM: exact-dedup molecules and run the per-cell EM, writing
-    /// gzipped MatrixMarket + barcodes/features.
+    /// Count matrix from aligned reads: either a pre-aligned name-grouped BAM (`--b1`) or barcoded
+    /// reads aligned internally against a transcriptome (`--r1` + `--reference`). Exact-dedups
+    /// molecules, runs the per-cell EM, and writes gzipped MatrixMarket + barcodes/features.
     Count {
-        /// pre-aligned, name-grouped BAM
+        /// pre-aligned, name-grouped BAM (alternative to --r1 + --reference)
         #[arg(long)]
-        b1: PathBuf,
+        b1: Option<PathBuf>,
+        /// barcoded reads (gzipped FASTA) to align internally; requires --reference
+        #[arg(long)]
+        r1: Option<PathBuf>,
+        /// transcriptome FASTA for internal alignment; requires --r1
+        #[arg(long)]
+        reference: Option<PathBuf>,
         /// output directory
         #[arg(short, long)]
         output: PathBuf,
@@ -71,11 +78,30 @@ fn main() -> std::io::Result<()> {
                 stats.total, stats.matched, stats.small, stats.ambiguous, stats.mismatch
             );
         }
-        Cmd::Count { b1, output } => {
+        Cmd::Count {
+            b1,
+            r1,
+            reference,
+            output,
+        } => {
             std::fs::create_dir_all(&output)?;
             bagpiper::logging::init(&output, "count")?;
-            info!("count b1={}", b1.display());
-            let mut eq = bagpiper::eqclass::read_bam(&b1)?;
+            let mut eq = match (b1, r1, reference) {
+                (Some(b1), None, None) => {
+                    info!("count b1={}", b1.display());
+                    bagpiper::eqclass::read_bam(&b1)?
+                }
+                (None, Some(r1), Some(reference)) => {
+                    info!("count align r1={} ref={}", r1.display(), reference.display());
+                    bagpiper::align::align_to_eqclass(&r1, &reference)?
+                }
+                _ => {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        "count needs either --b1, or --r1 with --reference",
+                    ))
+                }
+            };
             let raw = eq.molecules.len();
             bagpiper::dedup::exact(&mut eq.molecules);
             bagpiper::count::write_matrix(&eq, &output)?;

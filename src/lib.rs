@@ -15,6 +15,7 @@ pub mod chemistry;
 // Pipeline stages
 pub mod barcode; // FASTQ -> assigned CB/UMI + cDNA
 pub mod seal; // Smith-Waterman barcode rescue
+pub mod align; // embedded minimap2: reads + reference -> eqclass
 pub mod eqclass; // BAM -> packed molecules
 pub mod dedup; // exact PCR dedup
 pub mod em; // length-weighted EM
