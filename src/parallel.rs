@@ -131,4 +131,27 @@ mod tests {
         );
         assert!(r.is_err());
     }
+
+    #[test]
+    fn result_is_worker_count_invariant() {
+        // `--threads` only changes how many workers run; the aggregate result must not depend on it.
+        let sum = |workers: usize| {
+            let mut n = 0u32;
+            run(
+                || {
+                    (n < 500).then(|| {
+                        n += 1;
+                        Ok::<u32, std::io::Error>(n)
+                    })
+                },
+                workers,
+                || (),
+                |_: &mut (), x: u32| x as u64,
+                |rx: Receiver<u64>| Ok::<u64, std::io::Error>(rx.into_iter().sum()),
+            )
+            .unwrap()
+        };
+        assert_eq!(sum(1), (1..=500u64).sum());
+        assert_eq!(sum(1), sum(8));
+    }
 }

@@ -29,6 +29,9 @@ enum Cmd {
         /// nanopore (long-read) mode: the reverse/forward regex + Smith-Waterman seal cascade
         #[arg(long)]
         nanopore: bool,
+        /// worker threads (default: machine parallelism minus 2); cap it to share a busy server
+        #[arg(long)]
+        threads: Option<usize>,
     },
     /// Count matrix from aligned reads: either a pre-aligned name-grouped BAM (`--b1`) or barcoded
     /// reads aligned internally against a transcriptome (`--r1` + `--reference`). Exact-dedups
@@ -55,6 +58,9 @@ enum Cmd {
         /// --collapse guard: BIN-merge only where a cell-gene has <= T distinct 5' UMIs
         #[arg(long, default_value_t = 50)]
         collapse_t: usize,
+        /// worker threads (default: machine parallelism minus 2); cap it to share a busy server
+        #[arg(long)]
+        threads: Option<usize>,
     },
     /// Extract the V5 5' dual-UMI (TSO seal) from barcoded reads, writing
     /// `>origid_CB_UMI_umi1_umi2` + trimmed cDNA. Run after `barcode`, before alignment, for V5.
@@ -65,6 +71,9 @@ enum Cmd {
         /// output directory
         #[arg(short, long)]
         output: PathBuf,
+        /// worker threads (default: machine parallelism minus 2); cap it to share a busy server
+        #[arg(long)]
+        threads: Option<usize>,
     },
 }
 
@@ -76,9 +85,11 @@ fn main() -> std::io::Result<()> {
             whitelist,
             output,
             nanopore,
+            threads,
         } => {
             std::fs::create_dir_all(&output)?;
             bagpiper::logging::init(&output, "barcode")?;
+            let workers = threads.unwrap_or_else(bagpiper::parallel::default_workers);
             info!(
                 "barcode {} r1={}",
                 if nanopore { "nanopore" } else { "illumina" },
@@ -88,7 +99,7 @@ fn main() -> std::io::Result<()> {
                     .join(",")
             );
             let stats = if nanopore {
-                bagpiper::barcode::run_nanopore(&r1, &whitelist, &output)?
+                bagpiper::barcode::run_nanopore(&r1, &whitelist, &output, workers)?
             } else {
                 if r1.len() != 1 {
                     return Err(std::io::Error::new(
@@ -102,7 +113,7 @@ fn main() -> std::io::Result<()> {
                         "illumina mode needs --r2",
                     )
                 })?;
-                bagpiper::barcode::run_illumina(&r1[0], &r2, &whitelist, &output)?
+                bagpiper::barcode::run_illumina(&r1[0], &r2, &whitelist, &output, workers)?
             };
             info!(
                 "total {}  matched {}  small {}  ambiguous {}  mismatch {}",
@@ -117,9 +128,11 @@ fn main() -> std::io::Result<()> {
             collapse,
             t2g,
             collapse_t,
+            threads,
         } => {
             std::fs::create_dir_all(&output)?;
             bagpiper::logging::init(&output, "count")?;
+            let workers = threads.unwrap_or_else(bagpiper::parallel::default_workers);
             let source = match (b1, r1, reference) {
                 (Some(b1), None, None) => bagpiper::count::Source::Bam(b1),
                 (None, Some(reads), Some(reference)) => {
@@ -144,7 +157,7 @@ fn main() -> std::io::Result<()> {
                 None
             };
             info!("count collapse={}", collapse);
-            let c = bagpiper::count::run(source, collapse_cfg, &output)?;
+            let c = bagpiper::count::run(source, collapse_cfg, &output, workers)?;
             info!(
                 "transcripts {}  molecules {} -> deduped {} -> final {}  output {}",
                 c.transcripts,
@@ -154,11 +167,16 @@ fn main() -> std::io::Result<()> {
                 output.display()
             );
         }
-        Cmd::Tso { r1, output } => {
+        Cmd::Tso {
+            r1,
+            output,
+            threads,
+        } => {
             std::fs::create_dir_all(&output)?;
             bagpiper::logging::init(&output, "tso")?;
+            let workers = threads.unwrap_or_else(bagpiper::parallel::default_workers);
             info!("tso r1={}", r1.display());
-            let stats = bagpiper::tso::run_tso(&r1, &output)?;
+            let stats = bagpiper::tso::run_tso(&r1, &output, workers)?;
             info!(
                 "total {}  matched {}  small {}  no_seal {}  far_seal {}",
                 stats.total, stats.matched, stats.small, stats.no_seal, stats.far_seal

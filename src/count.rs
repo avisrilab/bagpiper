@@ -38,12 +38,13 @@ pub fn run(
     source: Source,
     collapse: Option<(PathBuf, usize)>,
     out_dir: &Path,
+    workers: usize,
 ) -> io::Result<Counts> {
     let v5_binid = collapse.is_some();
     let mut eq = match source {
         Source::Bam(b1) => crate::eqclass::read_bam(&b1, v5_binid)?,
         Source::Align { reads, reference } => {
-            crate::align::align_to_eqclass(&reads, &reference, v5_binid)?
+            crate::align::align_to_eqclass(&reads, &reference, v5_binid, workers)?
         }
     };
     let raw = eq.molecules.len();
@@ -54,7 +55,7 @@ pub fn run(
         crate::collapse::collapse(&mut eq, &map, threshold);
     }
     let final_molecules = eq.molecules.len();
-    write_matrix(&eq, out_dir)?;
+    write_matrix(&eq, out_dir, workers)?;
     Ok(Counts {
         transcripts: eq.transcripts.len(),
         raw,
@@ -68,7 +69,7 @@ pub fn run(
 /// in reference-id order) into `out_dir`. Molecules must be deduped and cell-sorted (see
 /// [`crate::dedup::exact`]) so each run of equal-cell molecules is one matrix row. The declared nnz
 /// is the true triplet count.
-pub fn write_matrix<P: AsRef<Path>>(eq: &EqClass, out_dir: P) -> io::Result<()> {
+pub fn write_matrix<P: AsRef<Path>>(eq: &EqClass, out_dir: P, workers: usize) -> io::Result<()> {
     let out_dir = out_dir.as_ref();
     let n_txp = eq.transcripts.len();
     let txp_lengths: Vec<u32> = eq.transcripts.iter().map(|&(_, len)| len).collect();
@@ -91,7 +92,7 @@ pub fn write_matrix<P: AsRef<Path>>(eq: &EqClass, out_dir: P) -> io::Result<()> 
             }
             Some(Ok::<_, io::Error>((cell, start, i)))
         },
-        parallel::default_workers(),
+        workers,
         || (vec![0.0f32; n_txp], vec![0.0f32; n_txp]),
         |(alphas, scratch): &mut (Vec<f32>, Vec<f32>),
          (cell, start, end): (CellId, usize, usize)| {
@@ -191,7 +192,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("bp_count_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        write_matrix(&eq, &dir).unwrap();
+        write_matrix(&eq, &dir, crate::parallel::default_workers()).unwrap();
 
         let barcodes = read_gz(dir.join("barcodes.tsv.gz"));
         assert_eq!(barcodes.lines().count(), 2, "two cells");
@@ -259,6 +260,7 @@ mod tests {
             },
             Some((t2gp, 50)),
             &dir,
+            crate::parallel::default_workers(),
         )
         .unwrap();
         assert_eq!(c.raw, 3);

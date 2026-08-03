@@ -67,7 +67,7 @@ pub struct Stats {
 
 /// Extract the 5' UMI from each barcoded read, writing `>origid_CB_UMI_umi1_umi2` + trimmed cDNA to
 /// the passed sink and unassigned reads unchanged to the failed sink.
-pub fn run_tso(r1: &Path, out_dir: &Path) -> io::Result<Stats> {
+pub fn run_tso(r1: &Path, out_dir: &Path, workers: usize) -> io::Result<Stats> {
     let passed = fastq::gz_writer(out_dir.join("passed.tso.nanopore.fa.gz"))?;
     let failed = fastq::gz_writer(out_dir.join("failed.tso.nanopore.fa.gz"))?;
     let mut reader = fastq::open_gz(r1)?;
@@ -79,7 +79,7 @@ pub fn run_tso(r1: &Path, out_dir: &Path) -> io::Result<Stats> {
                     .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
             })
         },
-        parallel::default_workers(),
+        workers,
         || (),
         |_: &mut (), (name, seq): (Vec<u8>, Vec<u8>)| {
             let e = seal_extraction(&seq);

@@ -29,7 +29,8 @@ fn count_matrix_is_well_formed() {
     let mut eq = bagpiper::eqclass::read_bam(&bam, false).expect("read_bam");
     let n_txp = eq.transcripts.len();
     bagpiper::dedup::exact(&mut eq.molecules);
-    bagpiper::count::write_matrix(&eq, &out_dir).expect("write_matrix");
+    bagpiper::count::write_matrix(&eq, &out_dir, bagpiper::parallel::default_workers())
+        .expect("write_matrix");
 
     let barcodes = read_gz(format!("{out_dir}/barcodes.tsv.gz"));
     let n_cells = barcodes.lines().count();

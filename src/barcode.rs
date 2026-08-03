@@ -189,7 +189,12 @@ fn record_id(name: &[u8], cell: CellId, umi: &[u8]) -> Vec<u8> {
 /// Nanopore: assign each read via the cascade, writing `>origid_CB_UMI` + cDNA to the passed sink
 /// (UMI and cDNA reverse-complemented on the non-polyA strand) and unassigned reads unchanged to the
 /// failed sink.
-pub fn run_nanopore(r1: &[PathBuf], wl_path: &Path, out_dir: &Path) -> io::Result<Stats> {
+pub fn run_nanopore(
+    r1: &[PathBuf],
+    wl_path: &Path,
+    out_dir: &Path,
+    workers: usize,
+) -> io::Result<Stats> {
     let wl = Whitelist::from_csv(wl_path)?;
     let rev = Chemistry::PipV4.barcode_regex(true);
     let fwd = Chemistry::PipV4.barcode_regex(false);
@@ -203,7 +208,7 @@ pub fn run_nanopore(r1: &[PathBuf], wl_path: &Path, out_dir: &Path) -> io::Resul
                 .next_seq()
                 .map(|res| res.map(|(id, seq)| (fastq::read_name(&id).to_vec(), seq)))
         },
-        parallel::default_workers(),
+        workers,
         || (),
         |_: &mut (), (name, seq): (Vec<u8>, Vec<u8>)| {
             let a = assign_nanopore(&seq, &rev, &fwd, &wl);
@@ -256,7 +261,13 @@ pub fn run_nanopore(r1: &[PathBuf], wl_path: &Path, out_dir: &Path) -> io::Resul
 
 /// Illumina: match the reverse regex on revcomp(R1), pair the barcode with R2 as cDNA, and write
 /// `>origid_CB_UMI` + R2 for assigned pairs. Unassigned pairs are only counted.
-pub fn run_illumina(r1: &Path, r2: &Path, wl_path: &Path, out_dir: &Path) -> io::Result<Stats> {
+pub fn run_illumina(
+    r1: &Path,
+    r2: &Path,
+    wl_path: &Path,
+    out_dir: &Path,
+    workers: usize,
+) -> io::Result<Stats> {
     let wl = Whitelist::from_csv(wl_path)?;
     let rev = Chemistry::PipV4.barcode_regex(true);
     let out = fastq::gz_writer(out_dir.join("read.bcd.illumina.fa.gz"))?;
@@ -282,7 +293,7 @@ pub fn run_illumina(r1: &Path, r2: &Path, wl_path: &Path, out_dir: &Path) -> io:
                 "R1/R2 record count mismatch",
             ))),
         },
-        parallel::default_workers(),
+        workers,
         || (),
         |_: &mut (), (name, r1seq, r2seq): (Vec<u8>, Vec<u8>, Vec<u8>)| {
             let a = assign_illumina(&r1seq, &r2seq, &rev, &wl);

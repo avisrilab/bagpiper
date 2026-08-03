@@ -59,6 +59,7 @@ fn nanopore_matches_golden() {
         &[md().join("tests/fixtures/barcode_nanopore.fq.gz")],
         &md().join("tests/whitelist/synthetic_barcodes.csv"),
         &out,
+        bagpiper::parallel::default_workers(),
     )
     .unwrap();
     assert_records_eq(
@@ -84,6 +85,7 @@ fn illumina_matches_golden() {
         &md().join("tests/fixtures/barcode_illumina_r2.fq.gz"),
         &md().join("tests/whitelist/synthetic_barcodes.csv"),
         &out,
+        bagpiper::parallel::default_workers(),
     )
     .unwrap();
     assert_records_eq(

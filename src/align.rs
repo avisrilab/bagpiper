@@ -25,6 +25,7 @@ pub fn align_to_eqclass<P: AsRef<Path>>(
     reads: P,
     reference: P,
     v5_binid: bool,
+    workers: usize,
 ) -> io::Result<EqClass> {
     let mut aligner = Aligner::builder()
         .map_ont()
@@ -56,7 +57,7 @@ pub fn align_to_eqclass<P: AsRef<Path>>(
                     .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
             })
         },
-        parallel::default_workers(),
+        workers,
         || (),
         |_: &mut (), (name, seq): (Vec<u8>, Vec<u8>)| map_one(&aligner, &name, &seq, v5_binid),
         |rx| -> io::Result<Vec<Molecule>> { Ok(rx.into_iter().flatten().collect()) },
@@ -131,7 +132,8 @@ mod tests {
             .unwrap();
         gz.finish().unwrap();
 
-        let eq = align_to_eqclass(&readsp, &refp, false).unwrap();
+        let eq =
+            align_to_eqclass(&readsp, &refp, false, crate::parallel::default_workers()).unwrap();
         assert_eq!(eq.transcripts.len(), 2);
         assert_eq!(eq.transcripts[0].0, "TXP0");
         assert_eq!(eq.molecules.len(), 1, "one mapped molecule");

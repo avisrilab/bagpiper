@@ -101,7 +101,7 @@ fn multimapping_em_produces_fractional_abundances() {
     let dir = std::env::temp_dir().join(format!("bp_mm_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
-    bagpiper::count::write_matrix(&eq, &dir).unwrap();
+    bagpiper::count::write_matrix(&eq, &dir, bagpiper::parallel::default_workers()).unwrap();
 
     let vals = read_values(&dir, true);
     assert!(
@@ -133,7 +133,7 @@ fn matches_reference_count_within_tolerance() {
     std::fs::create_dir_all(&reff).unwrap();
 
     // my output (gzipped)
-    bagpiper::count::write_matrix(&eq, &mine).unwrap();
+    bagpiper::count::write_matrix(&eq, &mine, bagpiper::parallel::default_workers()).unwrap();
 
     // the same molecules as a reference sorted_eqclass.txt (cell-sorted by dedup already)
     let eqtxt = dir.join("sorted_eqclass.txt");
