@@ -14,9 +14,9 @@ struct Cli {
 enum Cmd {
     /// Assign cell barcodes and UMIs from FASTQ, writing barcoded reads as gzipped FASTA.
     Barcode {
-        /// input read 1 FASTQ (.fq.gz)
-        #[arg(long)]
-        r1: PathBuf,
+        /// input read 1 FASTQ(s) (.fq.gz); repeat or space-separate to read a split library as one
+        #[arg(long, num_args = 1..)]
+        r1: Vec<PathBuf>,
         /// input read 2 FASTQ (.fq.gz); illumina only
         #[arg(long)]
         r2: Option<PathBuf>,
@@ -82,18 +82,27 @@ fn main() -> std::io::Result<()> {
             info!(
                 "barcode {} r1={}",
                 if nanopore { "nanopore" } else { "illumina" },
-                r1.display()
+                r1.iter()
+                    .map(|p| p.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(",")
             );
             let stats = if nanopore {
                 bagpiper::barcode::run_nanopore(&r1, &whitelist, &output)?
             } else {
+                if r1.len() != 1 {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        "illumina mode takes a single --r1 (paired with --r2)",
+                    ));
+                }
                 let r2 = r2.ok_or_else(|| {
                     std::io::Error::new(
                         std::io::ErrorKind::InvalidInput,
                         "illumina mode needs --r2",
                     )
                 })?;
-                bagpiper::barcode::run_illumina(&r1, &r2, &whitelist, &output)?
+                bagpiper::barcode::run_illumina(&r1[0], &r2, &whitelist, &output)?
             };
             info!(
                 "total {}  matched {}  small {}  ambiguous {}  mismatch {}",

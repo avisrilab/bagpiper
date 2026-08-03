@@ -56,7 +56,7 @@ fn nanopore_matches_golden() {
     let _ = std::fs::remove_dir_all(&out);
     std::fs::create_dir_all(&out).unwrap();
     bagpiper::barcode::run_nanopore(
-        &md().join("tests/fixtures/barcode_nanopore.fq.gz"),
+        &[md().join("tests/fixtures/barcode_nanopore.fq.gz")],
         &md().join("tests/whitelist/synthetic_barcodes.csv"),
         &out,
     )

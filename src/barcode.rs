@@ -6,7 +6,7 @@
 //! strand.
 
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use log::info;
 use regex::Regex;
@@ -189,20 +189,19 @@ fn record_id(name: &[u8], cell: CellId, umi: &[u8]) -> Vec<u8> {
 /// Nanopore: assign each read via the cascade, writing `>origid_CB_UMI` + cDNA to the passed sink
 /// (UMI and cDNA reverse-complemented on the non-polyA strand) and unassigned reads unchanged to the
 /// failed sink.
-pub fn run_nanopore(r1: &Path, wl_path: &Path, out_dir: &Path) -> io::Result<Stats> {
+pub fn run_nanopore(r1: &[PathBuf], wl_path: &Path, out_dir: &Path) -> io::Result<Stats> {
     let wl = Whitelist::from_csv(wl_path)?;
     let rev = Chemistry::PipV4.barcode_regex(true);
     let fwd = Chemistry::PipV4.barcode_regex(false);
     let passed = fastq::gz_writer(out_dir.join("passed.bcd.nanopore.fa.gz"))?;
     let failed = fastq::gz_writer(out_dir.join("failed.bcd.nanopore.fa.gz"))?;
-    let mut reader = fastq::open_gz(r1)?;
+    let mut reader = fastq::MultiReader::open(r1);
 
     parallel::run(
         || {
-            reader.next().map(|rec| {
-                rec.map(|r| (fastq::read_name(r.id()).to_vec(), r.seq().to_vec()))
-                    .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
-            })
+            reader
+                .next_seq()
+                .map(|res| res.map(|(id, seq)| (fastq::read_name(&id).to_vec(), seq)))
         },
         parallel::default_workers(),
         || (),
