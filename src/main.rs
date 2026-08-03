@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
+use log::info;
 
 #[derive(Parser)]
 #[command(name = "bagpiper", version, about = "Process PIP-seq data.")]
@@ -51,6 +52,12 @@ fn main() -> std::io::Result<()> {
             nanopore,
         } => {
             std::fs::create_dir_all(&output)?;
+            bagpiper::logging::init(&output, "barcode")?;
+            info!(
+                "barcode {} r1={}",
+                if nanopore { "nanopore" } else { "illumina" },
+                r1.display()
+            );
             let stats = if nanopore {
                 bagpiper::barcode::run_nanopore(&r1, &whitelist, &output)?
             } else {
@@ -59,19 +66,21 @@ fn main() -> std::io::Result<()> {
                 })?;
                 bagpiper::barcode::run_illumina(&r1, &r2, &whitelist, &output)?
             };
-            eprintln!(
-                "Total: {}  Matched: {}  Small: {}  Ambiguous: {}  Mismatch: {}",
+            info!(
+                "total {}  matched {}  small {}  ambiguous {}  mismatch {}",
                 stats.total, stats.matched, stats.small, stats.ambiguous, stats.mismatch
             );
         }
         Cmd::Count { b1, output } => {
             std::fs::create_dir_all(&output)?;
+            bagpiper::logging::init(&output, "count")?;
+            info!("count b1={}", b1.display());
             let mut eq = bagpiper::eqclass::read_bam(&b1)?;
             let raw = eq.molecules.len();
             bagpiper::dedup::exact(&mut eq.molecules);
             bagpiper::count::write_matrix(&eq, &output)?;
-            eprintln!(
-                "transcripts: {}  molecules: {} -> deduped: {}  output: {}",
+            info!(
+                "transcripts {}  molecules {} -> deduped {}  output {}",
                 eq.transcripts.len(),
                 raw,
                 eq.molecules.len(),

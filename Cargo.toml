@@ -1,6 +1,6 @@
 [package]
 name = "bagpiper"
-version = "0.1.1"
+version = "0.2.0"
 edition = "2021"
 authors = ["Avi Srivastava <avisrilab@gmail.com>"]
 description = "A suite of tools for rapid analysis of PIP-seq data."
@@ -23,6 +23,8 @@ path = "src/main.rs"
 clap = { version = "4.6.5", features = ["derive"] }
 crossbeam-channel = "0.5.16"
 flate2 = "1.1.9"
+humantime = "2.4"
+log = { version = "0.4", features = ["std"] }
 needletail = { version = "0.6.3", default-features = false }
 noodles = { version = "0.114.0", features = ["bam", "sam", "bgzf"] }
 regex = "1.13.1"
