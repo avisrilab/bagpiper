@@ -47,6 +47,16 @@ enum Cmd {
         #[arg(short, long)]
         output: PathBuf,
     },
+    /// Extract the V5 5' dual-UMI (TSO seal) from barcoded reads, writing
+    /// `>origid_CB_UMI_umi1_umi2` + trimmed cDNA. Run after `barcode`, before alignment, for V5.
+    Tso {
+        /// barcoded reads (gzipped FASTA) from `barcode`
+        #[arg(long)]
+        r1: PathBuf,
+        /// output directory
+        #[arg(short, long)]
+        output: PathBuf,
+    },
 }
 
 fn main() -> std::io::Result<()> {
@@ -111,6 +121,16 @@ fn main() -> std::io::Result<()> {
                 raw,
                 eq.molecules.len(),
                 output.display()
+            );
+        }
+        Cmd::Tso { r1, output } => {
+            std::fs::create_dir_all(&output)?;
+            bagpiper::logging::init(&output, "tso")?;
+            info!("tso r1={}", r1.display());
+            let stats = bagpiper::tso::run_tso(&r1, &output)?;
+            info!(
+                "total {}  matched {}  small {}  no_seal {}  far_seal {}",
+                stats.total, stats.matched, stats.small, stats.no_seal, stats.far_seal
             );
         }
     }

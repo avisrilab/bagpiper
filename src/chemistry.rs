@@ -1,9 +1,10 @@
 //! Barcode chemistry: each method's read layout and how a barcode read is parsed, behind a seam
 //! that new methods join by adding a [`Chemistry`] variant.
 //!
-//! Only PIP-seq V4 exists today. V5, 10x, and split-pool are expected to add their own variant with
-//! their own extraction (10x slices by fixed position rather than matching linkers), so the barcode
-//! stage dispatches on the chemistry instead of hard-coding one layout.
+//! PIP-seq V4 and V5 exist today; V5 shares V4's four-segment cell-barcode layout and differs only in
+//! carrying its molecular UMI on the 5' TSO (see [`crate::tso`]). 10x and split-pool are expected to
+//! add their own variant with their own extraction (10x slices by fixed position rather than matching
+//! linkers), so the barcode stage dispatches on the chemistry instead of hard-coding one layout.
 
 use regex::Regex;
 
@@ -15,15 +16,19 @@ use crate::seq::revcomp;
 pub enum Chemistry {
     /// PIP-seq V4: four cell-barcode segments (8-6-6-8 nt) and a 12 nt UMI joined by fixed linkers.
     PipV4,
+    /// PIP-seq V5: the same four-segment cell barcode as V4, but the molecular UMI is the 5' dual-UMI
+    /// on the TSO ([`crate::tso`]) rather than the 3' UMI. Barcode assignment is identical; the V5
+    /// path adds the TSO extraction step after barcoding.
+    PipV5,
 }
 
 impl Chemistry {
     /// The barcode-read regex with named captures. Forward strand yields
     /// `NL bc1 bc2 bc3 bc4 umi seq`; reverse yields `seq umi bc4 bc3 bc2 bc1 NR`. The cDNA flank is
-    /// always `seq`; linkers are matched but not captured.
+    /// always `seq`; linkers are matched but not captured. V4 and V5 share the cell-barcode layout.
     pub fn barcode_regex(&self, reverse: bool) -> Regex {
         match self {
-            Chemistry::PipV4 => pipseq_v4_regex(reverse),
+            Chemistry::PipV4 | Chemistry::PipV5 => pipseq_regex(reverse),
         }
     }
 }
@@ -32,7 +37,7 @@ const V4_BC_LENS: [usize; 4] = [8, 6, 6, 8];
 const V4_UMI_LEN: usize = 12;
 const V4_LINKERS: [&str; 3] = ["ATG", "GAG", "TCGAG"]; // bc1-bc2, bc2-bc3, bc3-bc4
 
-fn pipseq_v4_regex(reverse: bool) -> Regex {
+fn pipseq_regex(reverse: bool) -> Regex {
     let nt = |n: usize| format!("[ACGT]{{{}}}", n);
     let (b1, b2, b3, b4, umi) = (
         nt(V4_BC_LENS[0]),

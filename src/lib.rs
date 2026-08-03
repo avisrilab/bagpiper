@@ -3,6 +3,7 @@
 // Core primitives
 pub mod parallel; // reusable feeder-consumer
 pub mod seq; // 2-bit packed CellId / Umi
+pub mod sw; // Smith-Waterman fitting aligner (shared by the seals)
 pub mod whitelist; // exact + edit-1 barcode correction
 
 // I/O
@@ -15,6 +16,7 @@ pub mod chemistry;
 // Pipeline stages
 pub mod barcode; // FASTQ -> assigned CB/UMI + cDNA
 pub mod seal; // Smith-Waterman barcode rescue
+pub mod tso; // V5 5' dual-UMI seal
 pub mod align; // embedded minimap2: reads + reference -> eqclass
 pub mod eqclass; // BAM -> packed molecules
 pub mod dedup; // exact PCR dedup
