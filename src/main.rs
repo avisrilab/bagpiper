@@ -46,6 +46,9 @@ enum Cmd {
         /// output directory
         #[arg(short, long)]
         output: PathBuf,
+        /// V5: pack the 3 bp binning index onto the molecular key (for the opt-in collapse stage)
+        #[arg(long)]
+        v5_binid: bool,
     },
     /// Extract the V5 5' dual-UMI (TSO seal) from barcoded reads, writing
     /// `>origid_CB_UMI_umi1_umi2` + trimmed cDNA. Run after `barcode`, before alignment, for V5.
@@ -93,17 +96,18 @@ fn main() -> std::io::Result<()> {
             r1,
             reference,
             output,
+            v5_binid,
         } => {
             std::fs::create_dir_all(&output)?;
             bagpiper::logging::init(&output, "count")?;
             let mut eq = match (b1, r1, reference) {
                 (Some(b1), None, None) => {
-                    info!("count b1={}", b1.display());
-                    bagpiper::eqclass::read_bam(&b1)?
+                    info!("count b1={} v5_binid={}", b1.display(), v5_binid);
+                    bagpiper::eqclass::read_bam(&b1, v5_binid)?
                 }
                 (None, Some(r1), Some(reference)) => {
                     info!("count align r1={} ref={}", r1.display(), reference.display());
-                    bagpiper::align::align_to_eqclass(&r1, &reference)?
+                    bagpiper::align::align_to_eqclass(&r1, &reference, v5_binid)?
                 }
                 _ => {
                     return Err(std::io::Error::new(

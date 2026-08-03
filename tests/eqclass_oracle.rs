@@ -13,7 +13,7 @@ fn bam_eqclass_matches_reference() {
         _ => return,
     };
 
-    let eq = bagpiper::eqclass::read_bam(&bam).expect("read_bam");
+    let eq = bagpiper::eqclass::read_bam(&bam, false).expect("read_bam");
     let mut buf = Vec::new();
     eq.write_text(&mut buf).unwrap();
     let got = String::from_utf8(buf).unwrap();

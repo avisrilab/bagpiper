@@ -17,16 +17,34 @@ pub struct Molecule {
     pub txps: Vec<u32>,
 }
 
-/// Parse a v4 read name `origid_CB_UMI` into its cell and UMI. None on a malformed barcode/UMI or
-/// an unexpected field count; the original id is assumed underscore-free.
-pub fn parse_key(read_name: &[u8]) -> Option<(CellId, Umi)> {
-    let fields: Vec<&[u8]> = read_name.split(|&b| b == b'_').collect();
-    if fields.len() != 3 {
-        return None;
+/// Parse a barcoded read name into its cell and molecular UMI. Two layouts, distinguished by field
+/// count (the original id is assumed underscore-free):
+/// - v4 `origid_CB_UMI` (3 fields): the UMI is the 3' UMI.
+/// - v5 `origid_CB_algoUMI_umi1_umi2` (5 fields): the molecular UMI is the two 5' TSO 6-mers
+///   concatenated, dropping the barcode-step algo-UMI. With `v5_binid`, the 3 bp binning index (the
+///   last 3 nt of the 12 nt algo-UMI slot) is appended, giving the 15 nt key the `collapse` stage
+///   slices back.
+///
+/// None on a malformed barcode/UMI, an unexpected field count, or (under `v5_binid`) an algo-UMI slot
+/// that is not 12 nt.
+pub fn parse_key(read_name: &[u8], v5_binid: bool) -> Option<(CellId, Umi)> {
+    let f: Vec<&[u8]> = read_name.split(|&b| b == b'_').collect();
+    match f.len() {
+        3 => Some((CellId::from_ascii(f[1])?, Umi::from_ascii(f[2])?)),
+        5 => {
+            let cell = CellId::from_ascii(f[1])?;
+            let mut key = f[3].to_vec();
+            key.extend_from_slice(f[4]);
+            if v5_binid {
+                if f[2].len() != 12 {
+                    return None;
+                }
+                key.extend_from_slice(&f[2][9..12]);
+            }
+            Some((cell, Umi::from_ascii(&key)?))
+        }
+        _ => None,
     }
-    let cell = CellId::from_ascii(fields[1])?;
-    let umi = Umi::from_ascii(fields[2])?;
-    Some((cell, umi))
 }
 
 /// An eqclass built from a BAM: every reference transcript (name, length) in reference order (index
@@ -57,8 +75,9 @@ impl EqClass {
 
 /// Build the eqclass from a name-grouped BAM. Reads are grouped by name; supplementary alignments
 /// are ignored; a group whose first non-supplementary alignment is unmapped is dropped. The
-/// transcript-id set of the remaining alignments is sorted into the molecule.
-pub fn read_bam<P: AsRef<Path>>(path: P) -> io::Result<EqClass> {
+/// transcript-id set of the remaining alignments is sorted into the molecule. The read name (v4 or
+/// v5) gives the cell and molecular UMI; `v5_binid` packs the V5 binning index (see [`parse_key`]).
+pub fn read_bam<P: AsRef<Path>>(path: P, v5_binid: bool) -> io::Result<EqClass> {
     let mut reader = File::open(path).map(bam::io::Reader::new)?;
     let header = reader.read_header()?;
 
@@ -83,7 +102,7 @@ pub fn read_bam<P: AsRef<Path>>(path: P) -> io::Result<EqClass> {
 
         if !have_group || name != cur_name.as_slice() {
             if have_group {
-                flush_group(&cur_name, &mut cur_tids, first_unmapped, &mut molecules);
+                flush_group(&cur_name, &mut cur_tids, first_unmapped, v5_binid, &mut molecules);
             }
             cur_name.clear();
             cur_name.extend_from_slice(name);
@@ -104,7 +123,7 @@ pub fn read_bam<P: AsRef<Path>>(path: P) -> io::Result<EqClass> {
         }
     }
     if have_group {
-        flush_group(&cur_name, &mut cur_tids, first_unmapped, &mut molecules);
+        flush_group(&cur_name, &mut cur_tids, first_unmapped, v5_binid, &mut molecules);
     }
 
     Ok(EqClass {
@@ -119,12 +138,13 @@ fn flush_group(
     name: &[u8],
     tids: &mut Vec<u32>,
     first_unmapped: Option<bool>,
+    v5_binid: bool,
     out: &mut Vec<Molecule>,
 ) {
     if first_unmapped != Some(false) {
         return;
     }
-    let (cell, umi) = match parse_key(name) {
+    let (cell, umi) = match parse_key(name, v5_binid) {
         Some(key) => key,
         None => return,
     };
@@ -139,19 +159,37 @@ mod tests {
 
     #[test]
     fn parse_v4_key() {
-        let (cell, umi) = parse_key(b"readid_AAACGTTGCAGAACAC_ACGTACGTACGT").unwrap();
+        let (cell, umi) = parse_key(b"readid_AAACGTTGCAGAACAC_ACGTACGTACGT", false).unwrap();
         assert_eq!(cell.render(), "AAACGTTGCAGAACAC");
         assert_eq!(umi.render(), "ACGTACGTACGT");
     }
 
     #[test]
+    fn parse_v5_key_concatenates_tso_umis() {
+        // origid_CB_algoUMI_umi1_umi2 -> CB, umi1+umi2 (algo-UMI dropped)
+        let name = b"rid_AAACGTTGCAGAACAC_AAAAAACGTACG_GTAGTT_AGGGGG";
+        let (cell, umi) = parse_key(name, false).unwrap();
+        assert_eq!(cell.render(), "AAACGTTGCAGAACAC");
+        assert_eq!(umi.render(), "GTAGTTAGGGGG");
+    }
+
+    #[test]
+    fn parse_v5_binid_appends_bin_index() {
+        // with v5_binid, append the last 3 nt of the 12 nt algo-UMI slot (AAAAAACGTACG -> ACG)
+        let name = b"rid_AAACGTTGCAGAACAC_AAAAAACGTACG_GTAGTT_AGGGGG";
+        assert_eq!(parse_key(name, true).unwrap().1.render(), "GTAGTTAGGGGGACG");
+        // a wrong-length algo-UMI slot is dropped, not packed
+        assert!(parse_key(b"rid_AAACGTTGCAGAACAC_ACG_GTAGTT_AGGGGG", true).is_none());
+    }
+
+    #[test]
     fn parse_rejects_unexpected_field_count() {
-        assert!(parse_key(b"readid_CB_UMI_extra").is_none());
-        assert!(parse_key(b"nounderscore").is_none());
+        assert!(parse_key(b"readid_CB_UMI_extra", false).is_none());
+        assert!(parse_key(b"nounderscore", false).is_none());
     }
 
     #[test]
     fn parse_rejects_non_acgt() {
-        assert!(parse_key(b"readid_AAACGTTGCAGAACAC_ACGTNCGTACGT").is_none());
+        assert!(parse_key(b"readid_AAACGTTGCAGAACAC_ACGTNCGTACGT", false).is_none());
     }
 }

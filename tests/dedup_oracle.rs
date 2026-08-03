@@ -16,7 +16,7 @@ fn dedup_matches_reference_sorted() {
         _ => return,
     };
 
-    let mut eq = bagpiper::eqclass::read_bam(&bam).expect("read_bam");
+    let mut eq = bagpiper::eqclass::read_bam(&bam, false).expect("read_bam");
     bagpiper::dedup::exact(&mut eq.molecules);
     let mut buf = Vec::new();
     eq.write_text(&mut buf).unwrap();

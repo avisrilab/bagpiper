@@ -26,7 +26,7 @@ fn count_matrix_is_well_formed() {
     };
     std::fs::create_dir_all(&out_dir).unwrap();
 
-    let mut eq = bagpiper::eqclass::read_bam(&bam).expect("read_bam");
+    let mut eq = bagpiper::eqclass::read_bam(&bam, false).expect("read_bam");
     let n_txp = eq.transcripts.len();
     bagpiper::dedup::exact(&mut eq.molecules);
     bagpiper::count::write_matrix(&eq, &out_dir).expect("write_matrix");

@@ -21,7 +21,11 @@ const MM_F_FOR_ONLY: i64 = 0x100000; // minimap2 --for-only
 /// reference sequences in index order (the BAM `@SQ` order), so `count` sees identical matrix
 /// dimensions and transcript ids either way. Each mapped read becomes one molecule carrying its
 /// non-supplementary target ids, sorted (matching the BAM path's tid order).
-pub fn align_to_eqclass<P: AsRef<Path>>(reads: P, reference: P) -> io::Result<EqClass> {
+pub fn align_to_eqclass<P: AsRef<Path>>(
+    reads: P,
+    reference: P,
+    v5_binid: bool,
+) -> io::Result<EqClass> {
     let mut aligner = Aligner::builder()
         .map_ont()
         .with_cigar()
@@ -54,7 +58,7 @@ pub fn align_to_eqclass<P: AsRef<Path>>(reads: P, reference: P) -> io::Result<Eq
         },
         parallel::default_workers(),
         || (),
-        |_: &mut (), (name, seq): (Vec<u8>, Vec<u8>)| map_one(&aligner, &name, &seq),
+        |_: &mut (), (name, seq): (Vec<u8>, Vec<u8>)| map_one(&aligner, &name, &seq, v5_binid),
         |rx| -> io::Result<Vec<Molecule>> { Ok(rx.into_iter().flatten().collect()) },
     )?;
 
@@ -66,8 +70,8 @@ pub fn align_to_eqclass<P: AsRef<Path>>(reads: P, reference: P) -> io::Result<Eq
 
 /// Map one read: `None` if its key is malformed or it is unmapped (skipped exactly as the BAM path
 /// skips unmapped reads). Target ids come back sorted, so the molecule matches the BAM-derived one.
-fn map_one(aligner: &Aligner<Built>, name: &[u8], seq: &[u8]) -> Option<Molecule> {
-    let (cell, umi) = parse_key(name)?;
+fn map_one(aligner: &Aligner<Built>, name: &[u8], seq: &[u8], v5_binid: bool) -> Option<Molecule> {
+    let (cell, umi) = parse_key(name, v5_binid)?;
     let hits = aligner.map(seq, false, false, None, None, Some(name)).ok()?;
     let mut txps: Vec<u32> = hits
         .iter()
@@ -123,7 +127,7 @@ mod tests {
             .unwrap();
         gz.finish().unwrap();
 
-        let eq = align_to_eqclass(&readsp, &refp).unwrap();
+        let eq = align_to_eqclass(&readsp, &refp, false).unwrap();
         assert_eq!(eq.transcripts.len(), 2);
         assert_eq!(eq.transcripts[0].0, "TXP0");
         assert_eq!(eq.molecules.len(), 1, "one mapped molecule");
