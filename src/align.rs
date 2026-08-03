@@ -72,7 +72,9 @@ pub fn align_to_eqclass<P: AsRef<Path>>(
 /// skips unmapped reads). Target ids come back sorted, so the molecule matches the BAM-derived one.
 fn map_one(aligner: &Aligner<Built>, name: &[u8], seq: &[u8], v5_binid: bool) -> Option<Molecule> {
     let (cell, umi) = parse_key(name, v5_binid)?;
-    let hits = aligner.map(seq, false, false, None, None, Some(name)).ok()?;
+    let hits = aligner
+        .map(seq, false, false, None, None, Some(name))
+        .ok()?;
     let mut txps: Vec<u32> = hits
         .iter()
         .filter(|m| !m.is_supplementary)
@@ -121,8 +123,10 @@ mod tests {
             .unwrap();
 
         let readsp = dir.join("reads.fa.gz");
-        let mut gz =
-            GzEncoder::new(std::fs::File::create(&readsp).unwrap(), Compression::default());
+        let mut gz = GzEncoder::new(
+            std::fs::File::create(&readsp).unwrap(),
+            Compression::default(),
+        );
         gz.write_all(format!(">r1_AAACGTTGCAGAACAC_ACGTACGTACGT\n{txp0}\n").as_bytes())
             .unwrap();
         gz.finish().unwrap();

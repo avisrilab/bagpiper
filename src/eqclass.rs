@@ -102,7 +102,13 @@ pub fn read_bam<P: AsRef<Path>>(path: P, v5_binid: bool) -> io::Result<EqClass> 
 
         if !have_group || name != cur_name.as_slice() {
             if have_group {
-                flush_group(&cur_name, &mut cur_tids, first_unmapped, v5_binid, &mut molecules);
+                flush_group(
+                    &cur_name,
+                    &mut cur_tids,
+                    first_unmapped,
+                    v5_binid,
+                    &mut molecules,
+                );
             }
             cur_name.clear();
             cur_name.extend_from_slice(name);
@@ -123,7 +129,13 @@ pub fn read_bam<P: AsRef<Path>>(path: P, v5_binid: bool) -> io::Result<EqClass> 
         }
     }
     if have_group {
-        flush_group(&cur_name, &mut cur_tids, first_unmapped, v5_binid, &mut molecules);
+        flush_group(
+            &cur_name,
+            &mut cur_tids,
+            first_unmapped,
+            v5_binid,
+            &mut molecules,
+        );
     }
 
     Ok(EqClass {

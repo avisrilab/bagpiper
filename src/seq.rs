@@ -141,7 +141,10 @@ mod tests {
     #[test]
     fn cellid_matches_base96_pack() {
         // segment 0 least significant; equals the reference short-CB encoding.
-        assert_eq!(CellId::from_rows([0, 0, 0, 0]).unwrap().render(), "A".repeat(16));
+        assert_eq!(
+            CellId::from_rows([0, 0, 0, 0]).unwrap().render(),
+            "A".repeat(16)
+        );
         assert_eq!(
             CellId::from_rows([1, 0, 0, 0]).unwrap().render(),
             format!("{}C", "A".repeat(15))

@@ -42,7 +42,12 @@ pub(crate) fn fit(read: &[u8], pat: &[u8]) -> Option<(usize, usize, Vec<Op>, i32
         for j in 1..=n {
             ix[i][j] = (ix[i - 1][j] + GAP_EXTEND).max(s[i - 1][j] + GAP_OPEN + GAP_EXTEND);
             dy[i][j] = (dy[i][j - 1] + GAP_EXTEND).max(s[i][j - 1] + GAP_OPEN + GAP_EXTEND);
-            let diag = s[i - 1][j - 1] + if read[i - 1] == pat[j - 1] { MATCH } else { MISMATCH };
+            let diag = s[i - 1][j - 1]
+                + if read[i - 1] == pat[j - 1] {
+                    MATCH
+                } else {
+                    MISMATCH
+                };
             s[i][j] = diag.max(ix[i][j]).max(dy[i][j]);
         }
     }
@@ -71,12 +76,21 @@ pub(crate) fn fit(read: &[u8], pat: &[u8]) -> Option<(usize, usize, Vec<Op>, i32
         match layer {
             Layer::S => {
                 let diag = if i > 0 {
-                    s[i - 1][j - 1] + if read[i - 1] == pat[j - 1] { MATCH } else { MISMATCH }
+                    s[i - 1][j - 1]
+                        + if read[i - 1] == pat[j - 1] {
+                            MATCH
+                        } else {
+                            MISMATCH
+                        }
                 } else {
                     NEG_INF
                 };
                 if i > 0 && s[i][j] == diag {
-                    ops.push(if read[i - 1] == pat[j - 1] { Op::Match } else { Op::Subst });
+                    ops.push(if read[i - 1] == pat[j - 1] {
+                        Op::Match
+                    } else {
+                        Op::Subst
+                    });
                     i -= 1;
                     j -= 1;
                 } else if s[i][j] == ix[i][j] {
@@ -108,7 +122,11 @@ pub(crate) fn fit(read: &[u8], pat: &[u8]) -> Option<(usize, usize, Vec<Op>, i32
 
 /// Advance `offset` (a read index) past `xlim` pattern columns, following the alignment ops. A
 /// deletion consumes a pattern column without a read base, an insertion a read base without a column.
-pub(crate) fn advance(offset: &mut usize, xlim: usize, ops: &mut std::slice::Iter<Op>) -> Option<()> {
+pub(crate) fn advance(
+    offset: &mut usize,
+    xlim: usize,
+    ops: &mut std::slice::Iter<Op>,
+) -> Option<()> {
     let mut check = 0;
     loop {
         match ops.next()? {

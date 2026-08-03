@@ -13,7 +13,9 @@ fn reference_tso(seq1: &str) -> Option<(String, String, String, usize)> {
     }
     let x = seq1.as_bytes();
     let y = b"CGCAGAGTVVVVVVTACTGVVVVVVGAAT";
-    let scoring = Scoring::from_scores(-1, -2, 2, -1).xclip(0).yclip(MIN_SCORE);
+    let scoring = Scoring::from_scores(-1, -2, 2, -1)
+        .xclip(0)
+        .yclip(MIN_SCORE);
     let mut aligner = Aligner::with_scoring(scoring);
     let alignment = aligner.custom(x, y);
     if alignment.score < 16 {
@@ -73,7 +75,10 @@ fn mine(seq: &str) -> Option<(String, String, String, usize)> {
 struct Rng(u64);
 impl Rng {
     fn next(&mut self) -> u64 {
-        self.0 = self.0.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        self.0 = self
+            .0
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         self.0 >> 33
     }
     fn under(&mut self, n: usize) -> usize {
@@ -97,8 +102,11 @@ fn tso_matches_bio_on_synthetic_reads() {
         let cdna_len = 15 + rng.under(40);
         let cdna = rng.dna(cdna_len);
         // Anchors, perturbed a third of the time each way; the aligner is what could diverge.
-        let (mut a, mut b, mut c) =
-            ("CGCAGAGT".to_string(), "TACTG".to_string(), "GAAT".to_string());
+        let (mut a, mut b, mut c) = (
+            "CGCAGAGT".to_string(),
+            "TACTG".to_string(),
+            "GAAT".to_string(),
+        );
         match case % 3 {
             1 => {
                 // 1-2 substitutions across the anchors (the aligner is what could diverge)
@@ -144,7 +152,10 @@ fn tso_matches_bio_on_synthetic_reads() {
         }
     }
 
-    eprintln!("tso differential: checked {checked}, disagreements {}", disagree.len());
+    eprintln!(
+        "tso differential: checked {checked}, disagreements {}",
+        disagree.len()
+    );
     assert!(
         disagree.is_empty(),
         "tso diverged from bio on {} reads:\n{}",

@@ -1,0 +1,2 @@
+# Keep lib.rs module declarations in pipeline-flow order (a navigation map), not alphabetical.
+reorder_modules = false

@@ -9,7 +9,9 @@ use bio::alignment::AlignmentOperation;
 fn reference_seal(seq1: &str) -> Option<(Vec<String>, String, String)> {
     let x = seq1.as_bytes();
     let y = b"CTCGAVVVVVVCTCVVVVVVCAT";
-    let scoring = Scoring::from_scores(-1, -2, 2, -1).xclip(0).yclip(MIN_SCORE);
+    let scoring = Scoring::from_scores(-1, -2, 2, -1)
+        .xclip(0)
+        .yclip(MIN_SCORE);
     let mut aligner = Aligner::with_scoring(scoring);
     let alignment = aligner.custom(x, y);
 
@@ -61,7 +63,9 @@ fn reference_seal(seq1: &str) -> Option<(Vec<String>, String, String)> {
 fn mine(seq: &str) -> Option<(Vec<String>, String, String)> {
     let (bcs, umi, txp) = bagpiper::seal::seal_extraction(seq.as_bytes())?;
     Some((
-        bcs.into_iter().map(|b| String::from_utf8(b).unwrap()).collect(),
+        bcs.into_iter()
+            .map(|b| String::from_utf8(b).unwrap())
+            .collect(),
         String::from_utf8(umi).unwrap(),
         String::from_utf8(txp).unwrap(),
     ))
@@ -70,7 +74,10 @@ fn mine(seq: &str) -> Option<(Vec<String>, String, String)> {
 struct Rng(u64);
 impl Rng {
     fn next(&mut self) -> u64 {
-        self.0 = self.0.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        self.0 = self
+            .0
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         self.0 >> 33
     }
     fn under(&mut self, n: usize) -> usize {
@@ -96,8 +103,7 @@ fn seal_matches_bio_on_synthetic_reads() {
         let txp_len = 22 + rng.under(40);
         let txp = rng.dna(txp_len);
         let umi = rng.dna(12);
-        let (mut a, mut b, mut c, mut d) =
-            (rng.dna(8), rng.dna(6), rng.dna(6), rng.dna(8));
+        let (mut a, mut b, mut c, mut d) = (rng.dna(8), rng.dna(6), rng.dna(6), rng.dna(8));
         let tail_len = 8 + rng.under(12);
         let tail = rng.dna(tail_len);
 
@@ -147,7 +153,10 @@ fn seal_matches_bio_on_synthetic_reads() {
         }
     }
 
-    eprintln!("seal differential: checked {checked}, disagreements {}", disagree.len());
+    eprintln!(
+        "seal differential: checked {checked}, disagreements {}",
+        disagree.len()
+    );
     assert!(
         disagree.is_empty(),
         "seal diverged from bio on {} reads:\n{}",

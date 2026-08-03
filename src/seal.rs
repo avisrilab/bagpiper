@@ -68,7 +68,15 @@ mod tests {
 
     #[test]
     fn rejects_seal_too_early() {
-        let read = seal_read("GAGAG", "ACACACGTGTGT", "AAGGTTCC", "GGAACC", "TTGGAA", "CCTTGG", "TA");
+        let read = seal_read(
+            "GAGAG",
+            "ACACACGTGTGT",
+            "AAGGTTCC",
+            "GGAACC",
+            "TTGGAA",
+            "CCTTGG",
+            "TA",
+        );
         assert!(seal_extraction(read.as_bytes()).is_none());
     }
 

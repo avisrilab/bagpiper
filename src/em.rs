@@ -68,7 +68,9 @@ pub fn optimize(
 
         converged = true;
         for i in 0..alphas.len() {
-            if scratch[i] > ALPHA_CHECK_CUTOFF && (alphas[i] - scratch[i]).abs() > REL_DIFF_TOLERANCE {
+            if scratch[i] > ALPHA_CHECK_CUTOFF
+                && (alphas[i] - scratch[i]).abs() > REL_DIFF_TOLERANCE
+            {
                 converged = false;
             }
             alphas[i] = scratch[i];

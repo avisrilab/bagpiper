@@ -67,7 +67,9 @@ fn read_to_string(path: &Path, gz: bool) -> String {
     let f = std::fs::File::open(path).unwrap();
     let mut s = String::new();
     if gz {
-        flate2::read::GzDecoder::new(f).read_to_string(&mut s).unwrap();
+        flate2::read::GzDecoder::new(f)
+            .read_to_string(&mut s)
+            .unwrap();
     } else {
         std::io::BufReader::new(f).read_to_string(&mut s).unwrap();
     }
@@ -108,7 +110,10 @@ fn multimapping_em_produces_fractional_abundances() {
     );
     // Mass is conserved: total assigned ~= number of molecules (25), up to floored tiny alphas.
     let total: f32 = vals.values().sum();
-    assert!((total - 25.0).abs() < 0.5, "total mass {total} should be ~25");
+    assert!(
+        (total - 25.0).abs() < 0.5,
+        "total mass {total} should be ~25"
+    );
 
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -168,8 +173,14 @@ fn matches_reference_count_within_tolerance() {
         let b = ref_v.get(k).copied().unwrap_or(0.0);
         max_abs = max_abs.max((a - b).abs());
     }
-    eprintln!("multimap differential: {} positions, max_abs_diff = {max_abs}", keys.len());
-    assert!(max_abs < 1e-2, "matrix must match reference within EM tolerance, got {max_abs}");
+    eprintln!(
+        "multimap differential: {} positions, max_abs_diff = {max_abs}",
+        keys.len()
+    );
+    assert!(
+        max_abs < 1e-2,
+        "matrix must match reference within EM tolerance, got {max_abs}"
+    );
 
     let _ = std::fs::remove_dir_all(&dir);
 }

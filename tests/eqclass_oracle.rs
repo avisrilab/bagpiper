@@ -33,5 +33,8 @@ fn bam_eqclass_matches_reference() {
     );
     got_lines.sort_unstable();
     want_lines.sort_unstable();
-    assert_eq!(got_lines, want_lines, "eqclass content must match the reference");
+    assert_eq!(
+        got_lines, want_lines,
+        "eqclass content must match the reference"
+    );
 }

@@ -34,16 +34,28 @@ fn count_matrix_is_well_formed() {
     let barcodes = read_gz(format!("{out_dir}/barcodes.tsv.gz"));
     let n_cells = barcodes.lines().count();
     let features = read_gz(format!("{out_dir}/features.tsv.gz"));
-    assert_eq!(features.lines().count(), n_txp, "one feature per transcript");
+    assert_eq!(
+        features.lines().count(),
+        n_txp,
+        "one feature per transcript"
+    );
 
     let mtx = read_gz(format!("{out_dir}/matrix.mtx.gz"));
     let lines: Vec<&str> = mtx.lines().collect();
     assert_eq!(lines[0], "%%MatrixMarket matrix coordinate real general");
     let dims: Vec<&str> = lines[2].split('\t').collect();
     assert_eq!(dims[0].parse::<usize>().unwrap(), n_cells, "rows == cells");
-    assert_eq!(dims[1].parse::<usize>().unwrap(), n_txp, "cols == transcripts");
+    assert_eq!(
+        dims[1].parse::<usize>().unwrap(),
+        n_txp,
+        "cols == transcripts"
+    );
     let declared_nnz: usize = dims[2].parse().unwrap();
-    assert_eq!(declared_nnz, lines.len() - 3, "declared nnz == actual triplet lines (true nnz)");
+    assert_eq!(
+        declared_nnz,
+        lines.len() - 3,
+        "declared nnz == actual triplet lines (true nnz)"
+    );
 
     // Every triplet is in range and carries a positive value.
     for line in &lines[3..] {

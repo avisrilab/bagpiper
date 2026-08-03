@@ -175,7 +175,10 @@ mod tests {
         let r0 = stored("AAAAAAAA", "AAAAAA", "CCCCCC", "CCCCCCCC");
         assert_eq!(wl.resolve(refs(&r0)), [0, 0, 0, 0]);
         // exact rows pack to the all-A barcode (row 0 in every segment).
-        assert_eq!(CellId::from_rows(wl.resolve(refs(&r0))).unwrap().render(), "A".repeat(16));
+        assert_eq!(
+            CellId::from_rows(wl.resolve(refs(&r0))).unwrap().render(),
+            "A".repeat(16)
+        );
 
         let r1 = stored("GGGGGGGG", "GGGGGG", "TTTTTT", "TTTTTTTT");
         assert_eq!(wl.resolve(refs(&r1)), [1, 1, 1, 1]);

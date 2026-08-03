@@ -37,5 +37,8 @@ fn dedup_matches_reference_sorted() {
     );
     got_lines.sort_unstable();
     want_lines.sort_unstable();
-    assert_eq!(got_lines, want_lines, "deduped molecule set must match the reference");
+    assert_eq!(
+        got_lines, want_lines,
+        "deduped molecule set must match the reference"
+    );
 }
