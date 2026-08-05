@@ -66,7 +66,7 @@ pub fn read_name(id: &[u8]) -> &[u8] {
 pub fn gz_writer(path: std::path::PathBuf) -> io::Result<GzEncoder<BufWriter<File>>> {
     Ok(GzEncoder::new(
         BufWriter::new(File::create(path)?),
-        Compression::default(),
+        Compression::fast(),
     ))
 }
 
