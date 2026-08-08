@@ -58,6 +58,14 @@ enum Cmd {
         /// --collapse guard: BIN-merge only where a cell-gene has <= T distinct 5' UMIs
         #[arg(long, default_value_t = 50)]
         collapse_t: usize,
+        /// prune a read's hits to the structurally-best-fitting transcripts by internal-indel gap
+        /// (internal-alignment path only)
+        #[arg(long)]
+        resolve_structural: bool,
+        /// --resolve-structural: drop a transcript needing this many more internal-indel bases than
+        /// the best-fitting one (also the floor below which the best must fit to prune at all)
+        #[arg(long, default_value_t = 20)]
+        min_gap: u32,
         /// worker threads (default: machine parallelism minus 2); cap it to share a busy server
         #[arg(long)]
         threads: Option<usize>,
@@ -128,6 +136,8 @@ fn main() -> std::io::Result<()> {
             collapse,
             t2g,
             collapse_t,
+            resolve_structural,
+            min_gap,
             threads,
         } => {
             std::fs::create_dir_all(&output)?;
@@ -156,8 +166,15 @@ fn main() -> std::io::Result<()> {
             } else {
                 None
             };
-            info!("count collapse={}", collapse);
-            let c = bagpiper::count::run(source, collapse_cfg, &output, workers)?;
+            let resolve = resolve_structural.then_some(bagpiper::align::Resolve {
+                margin: min_gap,
+                floor: min_gap,
+            });
+            info!(
+                "count collapse={} resolve_structural={}",
+                collapse, resolve_structural
+            );
+            let c = bagpiper::count::run(source, collapse_cfg, resolve, &output, workers)?;
             info!(
                 "transcripts {}  molecules {} -> deduped {} -> final {}  output {}",
                 c.transcripts,

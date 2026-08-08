@@ -33,18 +33,25 @@ pub struct Counts {
 /// The count pipeline in one call: build the eqclass (from a BAM or by aligning internally),
 /// exact-dedup, optionally run the guarded-BIN-id collapse, then write the matrix. `collapse` is
 /// `Some((t2g, threshold))` to enable it, which also packs the V5 binning index onto the molecular
-/// key (the collapse consumes it).
+/// key (the collapse consumes it). `resolve` (internal-alignment path only) opts into structural
+/// eqclass pruning; see [`crate::align::Resolve`].
 pub fn run(
     source: Source,
     collapse: Option<(PathBuf, usize)>,
+    resolve: Option<crate::align::Resolve>,
     out_dir: &Path,
     workers: usize,
 ) -> io::Result<Counts> {
     let v5_binid = collapse.is_some();
     let mut eq = match source {
-        Source::Bam(b1) => crate::eqclass::read_bam(&b1, v5_binid)?,
+        Source::Bam(b1) => {
+            if resolve.is_some() {
+                log::warn!("--resolve-structural has no effect on the --b1 BAM path; ignored");
+            }
+            crate::eqclass::read_bam(&b1, v5_binid)?
+        }
         Source::Align { reads, reference } => {
-            crate::align::align_to_eqclass(&reads, &reference, v5_binid, None, workers)?
+            crate::align::align_to_eqclass(&reads, &reference, v5_binid, resolve, workers)?
         }
     };
     let raw = eq.molecules.len();
@@ -295,6 +302,7 @@ mod tests {
                 reference: refp,
             },
             Some((t2gp, 50)),
+            None,
             &dir,
             crate::parallel::default_workers(),
         )
@@ -309,6 +317,70 @@ mod tests {
             read_gz(dir.join("barcodes.tsv.gz")).lines().count(),
             1,
             "one cell"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn run_resolve_structural_prunes_the_matrix() {
+        // A read spanning a cassette maps to both isoforms. Through count::run, resolve off keeps
+        // both (EM splits, both columns non-zero); resolve on prunes to the spanned isoform.
+        let dir = std::env::temp_dir().join(format!("bp_resolve_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let (fl, cassette, fr) = (synth(1, 2000), synth(2, 120), synth(3, 2000));
+        let ra = format!("{fl}{cassette}{fr}");
+        let ro = format!("{fl}{fr}");
+        let refp = dir.join("ref.fa");
+        std::fs::write(&refp, format!(">TXP0\n{ra}\n>TXP1\n{ro}\n")).unwrap();
+
+        let readsp = dir.join("reads.fa.gz");
+        let mut gz = GzEncoder::new(File::create(&readsp).unwrap(), Compression::default());
+        gz.write_all(format!(">r_AAACGTTGCAGAACAC_ACGTACGTACGT\n{ra}\n").as_bytes())
+            .unwrap();
+        gz.finish().unwrap();
+
+        // 0-indexed transcript ids with a non-zero matrix entry
+        let nonzero_txps = |out: &std::path::Path| -> Vec<u32> {
+            let mtx = read_gz(out.join("matrix.mtx.gz"));
+            let mut cols: Vec<u32> = mtx
+                .lines()
+                .skip(3)
+                .filter(|l| !l.is_empty())
+                .map(|l| l.split('\t').nth(1).unwrap().parse::<u32>().unwrap() - 1)
+                .collect();
+            cols.sort_unstable();
+            cols.dedup();
+            cols
+        };
+        let src = || Source::Align {
+            reads: readsp.clone(),
+            reference: refp.clone(),
+        };
+        let w = crate::parallel::default_workers();
+
+        let off = dir.join("off");
+        std::fs::create_dir_all(&off).unwrap();
+        run(src(), None, None, &off, w).unwrap();
+        assert_eq!(
+            nonzero_txps(&off),
+            vec![0, 1],
+            "default keeps both isoforms"
+        );
+
+        let on = dir.join("on");
+        std::fs::create_dir_all(&on).unwrap();
+        let r = crate::align::Resolve {
+            margin: 20,
+            floor: 20,
+        };
+        run(src(), None, Some(r), &on, w).unwrap();
+        assert_eq!(
+            nonzero_txps(&on),
+            vec![0],
+            "resolve prunes to the spanned isoform"
         );
 
         let _ = std::fs::remove_dir_all(&dir);
