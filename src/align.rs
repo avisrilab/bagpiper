@@ -17,6 +17,29 @@ use crate::parallel;
 
 const MM_F_FOR_ONLY: i64 = 0x100000; // minimap2 --for-only
 
+/// Prune a read's competing `(transcript-id, internal-gap)` hits. `internal-gap` is the
+/// inserted+deleted bases in that hit's alignment CIGAR (structural disagreement, excluding
+/// mismatches and terminal clips). Keeps transcripts within `margin` bases of the smallest gap and
+/// drops the rest, but only when the best fit clears `floor` (else nothing fits cleanly and all hits
+/// are kept). Output is sorted and deduped. Empty in, empty out. Wired into the align path in Stage 3.
+#[allow(dead_code)]
+fn prune(gaps: &[(u32, u32)], margin: u32, floor: u32) -> Vec<u32> {
+    let Some(best) = gaps.iter().map(|&(_, g)| g).min() else {
+        return Vec::new();
+    };
+    let mut kept: Vec<u32> = if best > floor {
+        gaps.iter().map(|&(t, _)| t).collect()
+    } else {
+        gaps.iter()
+            .filter(|&&(_, g)| g - best < margin)
+            .map(|&(t, _)| t)
+            .collect()
+    };
+    kept.sort_unstable();
+    kept.dedup();
+    kept
+}
+
 /// Build the eqclass by mapping the barcoded reads in `reads` to `reference`. Transcripts are the
 /// reference sequences in index order (the BAM `@SQ` order), so `count` sees identical matrix
 /// dimensions and transcript ids either way. Each mapped read becomes one molecule carrying its
@@ -143,5 +166,53 @@ mod tests {
         assert_eq!(m.txps, vec![0], "maps to TXP0 (tid 0) only");
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn prune_clean_cassette_drops_the_gapped_isoform() {
+        assert_eq!(prune(&[(0, 0), (1, 150)], 20, 20), vec![0]);
+    }
+
+    #[test]
+    fn prune_shared_region_keeps_both() {
+        assert_eq!(prune(&[(0, 0), (1, 0)], 20, 20), vec![0, 1]);
+    }
+
+    #[test]
+    fn prune_sub_margin_noise_keeps_both() {
+        assert_eq!(prune(&[(0, 0), (1, 5)], 20, 20), vec![0, 1]);
+    }
+
+    #[test]
+    fn prune_partial_drops_only_the_far_one() {
+        assert_eq!(prune(&[(0, 0), (1, 2), (2, 150)], 20, 20), vec![0, 1]);
+    }
+
+    #[test]
+    fn prune_margin_boundary_is_exclusive() {
+        // gap - best == margin is dropped; strictly within margin is kept.
+        assert_eq!(prune(&[(0, 0), (1, 20)], 20, 20), vec![0]);
+    }
+
+    #[test]
+    fn prune_no_clean_fit_keeps_all() {
+        // best gap 100 exceeds the floor, so nothing is trusted and all hits stay.
+        assert_eq!(prune(&[(0, 100), (1, 300)], 20, 20), vec![0, 1]);
+    }
+
+    #[test]
+    fn prune_dedups_repeated_transcript() {
+        // A transcript can appear twice (two alignments); the output is a set.
+        assert_eq!(prune(&[(0, 0), (0, 5), (1, 150)], 20, 20), vec![0]);
+    }
+
+    #[test]
+    fn prune_single_hit_passes_through() {
+        assert_eq!(prune(&[(0, 0)], 20, 20), vec![0]);
+    }
+
+    #[test]
+    fn prune_empty_is_empty() {
+        assert!(prune(&[], 20, 20).is_empty());
     }
 }
