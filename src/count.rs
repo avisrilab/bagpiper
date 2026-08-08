@@ -78,8 +78,9 @@ pub fn write_matrix<P: AsRef<Path>>(eq: &EqClass, out_dir: P, workers: usize) ->
     let mut i = 0;
 
     // Feed one cell (a contiguous equal-cell run) at a time; workers run the EM with their own
-    // buffers; the writer collects results (unordered) and emits barcodes + matrix + features. Row
-    // indices are assigned at write time, so barcodes.tsv[i] still matches matrix row i.
+    // buffers; the writer collects results (unordered), sorts them by barcode for deterministic
+    // output, and emits barcodes + matrix + features. Row indices are assigned at write time, so
+    // barcodes.tsv[i] still matches matrix row i.
     parallel::run(
         || {
             if i >= mols.len() {
@@ -118,6 +119,9 @@ pub fn write_matrix<P: AsRef<Path>>(eq: &EqClass, out_dir: P, workers: usize) ->
                     info!("counted {} cells", results.len());
                 }
             }
+            // Workers finish out of order; sort rows by barcode so the output is deterministic
+            // (row order would otherwise vary run to run).
+            results.sort_by(|a, b| a.0.cmp(&b.0));
 
             let mut barcodes = gz(out_dir.join("barcodes.tsv.gz"))?;
             for (bc, _) in &results {
@@ -209,6 +213,38 @@ mod tests {
             declared_nnz,
             lines.len() - 3,
             "declared nnz equals actual triplet lines"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn output_rows_are_sorted_by_barcode() {
+        // Workers finish out of order, so write_matrix sorts rows by barcode: the output must come
+        // out ascending (and identical run to run). Feed many cells and check the emitted order.
+        fn bc(i: usize) -> String {
+            (0..16)
+                .map(|k| ['A', 'C', 'G', 'T'][(i >> (2 * k)) & 3])
+                .collect()
+        }
+        let mut bcs: Vec<String> = (0..64).map(bc).collect();
+        bcs.sort();
+        let eq = EqClass {
+            transcripts: vec![("TXP0".to_string(), 100), ("TXP1".to_string(), 100)],
+            molecules: bcs.iter().map(|b| mol(b, "ACGTACGTACGT", &[0])).collect(),
+        };
+        let dir = std::env::temp_dir().join(format!("bp_sort_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        write_matrix(&eq, &dir, crate::parallel::default_workers()).unwrap();
+
+        let out: Vec<String> = read_gz(dir.join("barcodes.tsv.gz"))
+            .lines()
+            .map(str::to_string)
+            .collect();
+        assert_eq!(
+            out, bcs,
+            "output barcodes are sorted and match the input set"
         );
 
         let _ = std::fs::remove_dir_all(&dir);
