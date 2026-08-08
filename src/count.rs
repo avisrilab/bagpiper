@@ -44,7 +44,7 @@ pub fn run(
     let mut eq = match source {
         Source::Bam(b1) => crate::eqclass::read_bam(&b1, v5_binid)?,
         Source::Align { reads, reference } => {
-            crate::align::align_to_eqclass(&reads, &reference, v5_binid, workers)?
+            crate::align::align_to_eqclass(&reads, &reference, v5_binid, None, workers)?
         }
     };
     let raw = eq.molecules.len();

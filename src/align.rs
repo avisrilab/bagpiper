@@ -21,8 +21,7 @@ const MM_F_FOR_ONLY: i64 = 0x100000; // minimap2 --for-only
 /// inserted+deleted bases in that hit's alignment CIGAR (structural disagreement, excluding
 /// mismatches and terminal clips). Keeps transcripts within `margin` bases of the smallest gap and
 /// drops the rest, but only when the best fit clears `floor` (else nothing fits cleanly and all hits
-/// are kept). Output is sorted and deduped. Empty in, empty out. Wired into the align path in Stage 3.
-#[allow(dead_code)]
+/// are kept). Output is sorted and deduped. Empty in, empty out.
 fn prune(gaps: &[(u32, u32)], margin: u32, floor: u32) -> Vec<u32> {
     let Some(best) = gaps.iter().map(|&(_, g)| g).min() else {
         return Vec::new();
@@ -40,14 +39,23 @@ fn prune(gaps: &[(u32, u32)], margin: u32, floor: u32) -> Vec<u32> {
     kept
 }
 
+/// Structural-resolution parameters: `margin` and `floor` in internal-indel bases (see [`prune`]).
+#[derive(Clone, Copy)]
+pub struct Resolve {
+    pub margin: u32,
+    pub floor: u32,
+}
+
 /// Build the eqclass by mapping the barcoded reads in `reads` to `reference`. Transcripts are the
 /// reference sequences in index order (the BAM `@SQ` order), so `count` sees identical matrix
 /// dimensions and transcript ids either way. Each mapped read becomes one molecule carrying its
-/// non-supplementary target ids, sorted (matching the BAM path's tid order).
+/// non-supplementary target ids, sorted (matching the BAM path's tid order). With `resolve` set,
+/// each read's hits are pruned to the structurally-best-fitting transcripts (see [`prune`]).
 pub fn align_to_eqclass<P: AsRef<Path>>(
     reads: P,
     reference: P,
     v5_binid: bool,
+    resolve: Option<Resolve>,
     workers: usize,
 ) -> io::Result<EqClass> {
     let mut aligner = Aligner::builder()
@@ -82,7 +90,9 @@ pub fn align_to_eqclass<P: AsRef<Path>>(
         },
         workers,
         || (),
-        |_: &mut (), (name, seq): (Vec<u8>, Vec<u8>)| map_one(&aligner, &name, &seq, v5_binid),
+        |_: &mut (), (name, seq): (Vec<u8>, Vec<u8>)| {
+            map_one(&aligner, &name, &seq, v5_binid, resolve)
+        },
         |rx| -> io::Result<Vec<Molecule>> { Ok(rx.into_iter().flatten().collect()) },
     )?;
 
@@ -92,18 +102,66 @@ pub fn align_to_eqclass<P: AsRef<Path>>(
     })
 }
 
+/// Internal-indel gap of a hit's alignment: total inserted + deleted bases in the CIGAR (op 1 = I,
+/// op 2 = D). `None` if the hit carries no CIGAR. Terminal soft-clips and mismatches are excluded,
+/// so the gap measures structural disagreement, not read length or base-call noise.
+fn internal_gap(m: &minimap2::Mapping) -> Option<u32> {
+    let cigar = m.alignment.as_ref()?.cigar.as_ref()?;
+    Some(
+        cigar
+            .iter()
+            .filter(|&&(_, op)| op == 1 || op == 2)
+            .map(|&(len, _)| len)
+            .sum(),
+    )
+}
+
 /// Map one read: `None` if its key is malformed or it is unmapped (skipped exactly as the BAM path
 /// skips unmapped reads). Target ids come back sorted, so the molecule matches the BAM-derived one.
-fn map_one(aligner: &Aligner<Built>, name: &[u8], seq: &[u8], v5_binid: bool) -> Option<Molecule> {
+/// With `resolve` set, the hits are pruned to the structurally-best-fitting transcripts by
+/// [`prune`]; a hit with no CIGAR cannot be assessed, so such a read is left unpruned.
+fn map_one(
+    aligner: &Aligner<Built>,
+    name: &[u8],
+    seq: &[u8],
+    v5_binid: bool,
+    resolve: Option<Resolve>,
+) -> Option<Molecule> {
     let (cell, umi) = parse_key(name, v5_binid)?;
     let hits = aligner
         .map(seq, false, false, None, None, Some(name))
         .ok()?;
-    let mut txps: Vec<u32> = hits
+    let mapped = hits
         .iter()
         .filter(|m| !m.is_supplementary)
-        .filter_map(|m| (m.target_id >= 0).then_some(m.target_id as u32))
-        .collect();
+        .filter(|m| m.target_id >= 0);
+    let mut txps: Vec<u32> = match resolve {
+        Some(r) => {
+            // One pass: (tid, internal-gap) per hit. `assessable` goes false if any hit lacks a
+            // CIGAR, in which case the read is left unpruned (never drop on absent evidence).
+            let mut gaps: Vec<(u32, u32)> = Vec::new();
+            let mut assessable = true;
+            for m in mapped {
+                let tid = m.target_id as u32;
+                match internal_gap(m) {
+                    Some(g) => gaps.push((tid, g)),
+                    None => {
+                        assessable = false;
+                        gaps.push((tid, 0)); // gap unused; the read is left unpruned below
+                    }
+                }
+            }
+            if assessable {
+                prune(&gaps, r.margin, r.floor)
+            } else {
+                let mut t: Vec<u32> = gaps.into_iter().map(|(t, _)| t).collect();
+                t.sort_unstable();
+                t.dedup();
+                t
+            }
+        }
+        None => mapped.map(|m| m.target_id as u32).collect(),
+    };
     if txps.is_empty() {
         return None;
     }
@@ -155,8 +213,14 @@ mod tests {
             .unwrap();
         gz.finish().unwrap();
 
-        let eq =
-            align_to_eqclass(&readsp, &refp, false, crate::parallel::default_workers()).unwrap();
+        let eq = align_to_eqclass(
+            &readsp,
+            &refp,
+            false,
+            None,
+            crate::parallel::default_workers(),
+        )
+        .unwrap();
         assert_eq!(eq.transcripts.len(), 2);
         assert_eq!(eq.transcripts[0].0, "TXP0");
         assert_eq!(eq.molecules.len(), 1, "one mapped molecule");
@@ -214,5 +278,56 @@ mod tests {
     #[test]
     fn prune_empty_is_empty() {
         assert!(prune(&[], 20, 20).is_empty());
+    }
+
+    #[test]
+    fn structural_resolve_drops_the_spanned_cassette_only() {
+        // TXP0 carries a 120 bp cassette between long shared flanks; TXP1 skips it. A read that
+        // spans the cassette aligns to TXP1 with a 120 bp insertion, so resolution drops TXP1. A
+        // read living in the shared flank fits both cleanly and stays ambiguous.
+        let dir = std::env::temp_dir().join(format!("bp_struct_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let (fl, cassette, fr) = (synth(20, 2000), synth(21, 120), synth(22, 2000));
+        let ra = format!("{fl}{cassette}{fr}");
+        let ro = format!("{fl}{fr}");
+        let refp = dir.join("ref.fa");
+        std::fs::write(&refp, format!(">TXP0\n{ra}\n>TXP1\n{ro}\n")).unwrap();
+
+        let txps = |seq: &str, resolve: Option<Resolve>| -> Vec<u32> {
+            let readsp = dir.join("r.fa.gz");
+            let mut gz = GzEncoder::new(
+                std::fs::File::create(&readsp).unwrap(),
+                Compression::default(),
+            );
+            gz.write_all(format!(">r_AAACGTTGCAGAACAC_ACGTACGTACGT\n{seq}\n").as_bytes())
+                .unwrap();
+            gz.finish().unwrap();
+            let w = crate::parallel::default_workers();
+            align_to_eqclass(&readsp, &refp, false, resolve, w)
+                .unwrap()
+                .molecules[0]
+                .txps
+                .clone()
+        };
+
+        let r = Some(Resolve {
+            margin: 20,
+            floor: 20,
+        });
+        assert_eq!(
+            txps(&ra, r),
+            vec![0],
+            "cassette read resolves to its isoform"
+        );
+        assert_eq!(txps(&ra, None), vec![0, 1], "default keeps both");
+        assert_eq!(
+            txps(&fr, r),
+            vec![0, 1],
+            "shared-region read stays ambiguous"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
