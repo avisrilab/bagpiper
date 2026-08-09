@@ -64,7 +64,7 @@ enum Cmd {
         resolve_structural: bool,
         /// --resolve-structural: drop a transcript needing this many more internal-indel bases than
         /// the best-fitting one (also the floor below which the best must fit to prune at all)
-        #[arg(long, default_value_t = 20)]
+        #[arg(long, default_value_t = 100)]
         min_gap: u32,
         /// worker threads (default: machine parallelism minus 2); cap it to share a busy server
         #[arg(long)]
