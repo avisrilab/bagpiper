@@ -14,11 +14,23 @@ use crate::seq::revcomp;
 /// A segment observed nowhere in the whitelist (not exact, not edit-1).
 pub const NOT_FOUND: u64 = u64::MAX;
 
+/// How an observed segment reached its whitelist row: equal to the stored key, one substitution
+/// (same length, one differing position), or one indel (a length change, or the same-length shift
+/// the re-padded deletion / trimmed insertion neighbors produce).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Edit {
+    Exact,
+    Substitution,
+    Indel,
+}
+
 /// Four-segment PIP-seq whitelist. `primary[i]` maps the reverse-complemented segment i to its row;
-/// `secondary[i]` maps each edit-1 neighbor to its row (last loader wins on a shared neighbor).
+/// `secondary[i]` maps each edit-1 neighbor to its row (last loader wins on a shared neighbor);
+/// `keys[i][row]` is the stored key of that row, for reporting how a neighbor was corrected.
 pub struct Whitelist {
     primary: [HashMap<Vec<u8>, u64>; 4],
     secondary: [HashMap<Vec<u8>, u64>; 4],
+    keys: [Vec<Vec<u8>>; 4],
 }
 
 impl Whitelist {
@@ -27,6 +39,7 @@ impl Whitelist {
     pub fn from_csv<P: AsRef<Path>>(path: P) -> io::Result<Whitelist> {
         let mut primary: Vec<HashMap<Vec<u8>, u64>> = vec![HashMap::new(); 4];
         let mut secondary: Vec<HashMap<Vec<u8>, u64>> = vec![HashMap::new(); 4];
+        let mut keys: Vec<Vec<Vec<u8>>> = vec![Vec::new(); 4];
 
         let mut lines = BufReader::new(File::open(path)?).lines();
         lines.next(); // header
@@ -41,6 +54,7 @@ impl Whitelist {
                 for neighbor in edit1_combinations(&key) {
                     secondary[seg].insert(neighbor, row);
                 }
+                keys[seg].push(key);
             }
             row += 1;
         }
@@ -48,20 +62,47 @@ impl Whitelist {
         Ok(Whitelist {
             primary: primary.try_into().unwrap(),
             secondary: secondary.try_into().unwrap(),
+            keys: keys.try_into().unwrap(),
         })
     }
 
     /// Resolve four observed segments (in stored, i.e. reverse-complemented, orientation) to their
     /// whitelist rows. Exact match wins; otherwise the edit-1 table; otherwise [`NOT_FOUND`].
     pub fn resolve(&self, segments: [&[u8]; 4]) -> [u64; 4] {
+        self.resolve_edits(segments).0
+    }
+
+    /// [`resolve`](Self::resolve) plus, per segment, how the observed segment relates to the stored
+    /// key of the row it resolved to. The row choice is exactly that of `resolve`; a [`NOT_FOUND`]
+    /// segment reports [`Edit::Exact`] (there is no key to compare against).
+    pub fn resolve_edits(&self, segments: [&[u8]; 4]) -> ([u64; 4], [Edit; 4]) {
         let mut rows = [NOT_FOUND; 4];
+        let mut edits = [Edit::Exact; 4];
         for i in 0..4 {
             rows[i] = match self.primary[i].get(segments[i]) {
                 Some(&r) => r,
-                None => *self.secondary[i].get(segments[i]).unwrap_or(&NOT_FOUND),
+                None => match self.secondary[i].get(segments[i]) {
+                    Some(&r) => {
+                        edits[i] = edit_kind(segments[i], &self.keys[i][r as usize]);
+                        r
+                    }
+                    None => NOT_FOUND,
+                },
             };
         }
-        rows
+        (rows, edits)
+    }
+}
+
+/// Classify `observed` against the stored `key` it resolved to (see [`Edit`]).
+pub fn edit_kind(observed: &[u8], key: &[u8]) -> Edit {
+    if observed.len() != key.len() {
+        return Edit::Indel;
+    }
+    match observed.iter().zip(key).filter(|(a, b)| a != b).count() {
+        0 => Edit::Exact,
+        1 => Edit::Substitution,
+        _ => Edit::Indel,
     }
 }
 
@@ -175,6 +216,42 @@ mod tests {
         let mut junk = stored("AAAAAAAA", "AAAAAA", "CCCCCC", "CCCCCCCC");
         junk[0] = b"ACGTACGT".to_vec();
         assert_eq!(wl.resolve(refs(&junk))[0], NOT_FOUND);
+
+        let _ = std::fs::remove_file(&p);
+    }
+
+    #[test]
+    fn resolve_edits_classifies_exact_substitution_and_indel() {
+        let p = write_wl(
+            "edits",
+            &[
+                ["AAAAAAAA", "AAAAAA", "CCCCCC", "CCCCCCCC"], // row 0
+                ["GGGGGGGG", "GGGGGG", "TTTTTT", "TTTTTTTT"], // row 1
+            ],
+        );
+        let wl = Whitelist::from_csv(&p).unwrap();
+
+        let r0 = stored("AAAAAAAA", "AAAAAA", "CCCCCC", "CCCCCCCC");
+        assert_eq!(wl.resolve_edits(refs(&r0)), ([0, 0, 0, 0], [Edit::Exact; 4]));
+
+        // one substitution in bc1: same row as `resolve`, reported as a substitution.
+        let mut e = stored("AAAAAAAA", "AAAAAA", "CCCCCC", "CCCCCCCC");
+        e[0][7] = b'C';
+        let (rows, edits) = wl.resolve_edits(refs(&e));
+        assert_eq!(rows, wl.resolve(refs(&e)));
+        assert_eq!(edits, [Edit::Substitution, Edit::Exact, Edit::Exact, Edit::Exact]);
+
+        // bc2 (stored GGGGGG) observed one base short: an indel.
+        let mut d = stored("AAAAAAAA", "AAAAAA", "CCCCCC", "CCCCCCCC");
+        d[1] = b"GGGGG".to_vec();
+        let (rows, edits) = wl.resolve_edits(refs(&d));
+        assert_eq!(rows[1], 0);
+        assert_eq!(edits[1], Edit::Indel);
+
+        assert_eq!(edit_kind(b"ACGT", b"ACGT"), Edit::Exact);
+        assert_eq!(edit_kind(b"ACGA", b"ACGT"), Edit::Substitution);
+        assert_eq!(edit_kind(b"CGTA", b"ACGT"), Edit::Indel); // deletion re-padded: same length, shifted
+        assert_eq!(edit_kind(b"ACGTT", b"ACGT"), Edit::Indel);
 
         let _ = std::fs::remove_file(&p);
     }

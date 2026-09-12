@@ -18,7 +18,19 @@ use crate::fastq;
 use crate::parallel;
 use crate::seal;
 use crate::seq::{revcomp, CellId};
-use crate::whitelist::Whitelist;
+use crate::whitelist::{Edit, Whitelist};
+
+/// Which arm of the cascade produced a match, and (for the regex arms) whether any segment was
+/// corrected by an indel. Every `Assign::Matched` is on exactly one path.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum AssignPath {
+    /// Regex match; every segment exact or corrected by one substitution.
+    RegexExactSub,
+    /// Regex match; at least one segment corrected by an insertion or deletion.
+    RegexIndel,
+    /// SW seal, either orientation.
+    Seal,
+}
 
 /// Outcome of assigning one read (pair). On the non-polyA strand (`is_polya` false) the driver
 /// reverse-complements the cDNA onto the polyA strand; the UMI is written as captured (matching the
@@ -30,6 +42,7 @@ pub enum Assign {
         umi: Vec<u8>,
         cdna: Vec<u8>,
         is_polya: bool,
+        path: AssignPath,
     },
     Small,
     NoRegex,
@@ -42,12 +55,23 @@ const MIN_CDNA_LEN: usize = 50;
 
 /// Resolve the four captured segments to a CellId, reverse-complementing the observed segments on
 /// the forward strand (matching the reference). None if any segment is absent from the whitelist.
-fn resolve(caps: &regex::Captures, wl: &Whitelist, is_forward: bool) -> Option<CellId> {
+/// Also reports the regex path: indel if any segment was corrected by one, else exact/substitution.
+fn resolve(
+    caps: &regex::Captures,
+    wl: &Whitelist,
+    is_forward: bool,
+) -> Option<(CellId, AssignPath)> {
     let orient = |b: &[u8]| if is_forward { revcomp(b) } else { b.to_vec() };
     let seg = |n: &str| orient(caps.name(n).unwrap().as_str().as_bytes());
     let owned = [seg("bc1"), seg("bc2"), seg("bc3"), seg("bc4")];
-    let rows = wl.resolve([&owned[0], &owned[1], &owned[2], &owned[3]]);
-    CellId::from_rows(rows)
+    let (rows, edits) = wl.resolve_edits([&owned[0], &owned[1], &owned[2], &owned[3]]);
+    let cell = CellId::from_rows(rows)?;
+    let path = if edits.contains(&Edit::Indel) {
+        AssignPath::RegexIndel
+    } else {
+        AssignPath::RegexExactSub
+    };
+    Some((cell, path))
 }
 
 /// One regex stage: single match, cDNA length floor, whitelist resolution. `is_forward` sets both
@@ -63,12 +87,13 @@ fn regex_stage(re: &Regex, wl: &Whitelist, read: &str, is_forward: bool) -> Opti
     if cdna.len() < MIN_CDNA_LEN {
         return None;
     }
-    let cell = resolve(&caps, wl, is_forward)?;
+    let (cell, path) = resolve(&caps, wl, is_forward)?;
     Some(Assign::Matched {
         cell,
         umi: caps.name("umi").unwrap().as_str().as_bytes().to_vec(),
         cdna: cdna.to_vec(),
         is_polya: !is_forward,
+        path,
     })
 }
 
@@ -83,6 +108,7 @@ fn seal_stage(read: &[u8], wl: &Whitelist) -> Option<Assign> {
         umi,
         cdna,
         is_polya: true,
+        path: AssignPath::Seal,
     })
 }
 
@@ -123,17 +149,18 @@ pub fn assign_illumina(r1: &[u8], r2: &[u8], rev_re: &Regex, wl: &Whitelist) -> 
         return Assign::MultiRegex;
     }
     match resolve(&caps, wl, true) {
-        Some(cell) => Assign::Matched {
+        Some((cell, path)) => Assign::Matched {
             cell,
             umi: caps.name("umi").unwrap().as_str().as_bytes().to_vec(),
             cdna: r2.to_vec(),
             is_polya: true,
+            path,
         },
         None => Assign::Mismatch,
     }
 }
 
-/// Per-run assignment counts.
+/// Per-run assignment counts. The three path counters (nanopore only) sum to `matched`.
 #[derive(Default, Clone, Copy, Debug)]
 pub struct Stats {
     pub total: u64,
@@ -142,6 +169,45 @@ pub struct Stats {
     pub no_regex: u64,
     pub multi: u64,
     pub mismatch: u64,
+    pub regex_exact_sub: u64,
+    pub regex_indel: u64,
+    pub seal: u64,
+}
+
+impl Stats {
+    fn count_path(&mut self, path: AssignPath) {
+        match path {
+            AssignPath::RegexExactSub => self.regex_exact_sub += 1,
+            AssignPath::RegexIndel => self.regex_indel += 1,
+            AssignPath::Seal => self.seal += 1,
+        }
+    }
+
+    /// Print the assignment-path report: each path as a count and a fraction of `matched`, and the
+    /// indel-tolerant fraction `(regex_indel + seal) / matched`.
+    pub fn report_paths(&self) {
+        let frac = |n: u64| {
+            if self.matched == 0 {
+                0.0
+            } else {
+                n as f64 / self.matched as f64
+            }
+        };
+        eprintln!(
+            "Assignment path (of {} matched): regex exact/substitution: {} ({:.4})  regex indel: {} ({:.4})  seal: {} ({:.4})",
+            self.matched,
+            self.regex_exact_sub,
+            frac(self.regex_exact_sub),
+            self.regex_indel,
+            frac(self.regex_indel),
+            self.seal,
+            frac(self.seal),
+        );
+        eprintln!(
+            "indel-tolerant fraction = (regex_indel + seal) / matched = {:.4}",
+            frac(self.regex_indel + self.seal)
+        );
+    }
 }
 
 fn gz_writer(path: std::path::PathBuf) -> io::Result<GzEncoder<BufWriter<File>>> {
@@ -176,7 +242,7 @@ pub fn run_nanopore(r1: &Path, wl_path: &Path, out_dir: &Path) -> io::Result<Sta
     let failed = gz_writer(out_dir.join("failed.bcd.nanopore.fa.gz"))?;
     let mut reader = fastq::open_gz(r1)?;
 
-    parallel::run(
+    let stats = parallel::run(
         || {
             reader.next().map(|rec| {
                 rec.map(|r| (fastq::read_name(r.id()).to_vec(), r.seq().to_vec()))
@@ -196,12 +262,13 @@ pub fn run_nanopore(r1: &Path, wl_path: &Path, out_dir: &Path) -> io::Result<Sta
             for (name, seq, a) in rx {
                 stats.total += 1;
                 match a {
-                    Assign::Matched { cell, umi, cdna, is_polya } => {
+                    Assign::Matched { cell, umi, cdna, is_polya, path } => {
                         // Reference writes the UMI as captured on whichever strand matched; only the
                         // cDNA is reverse-complemented onto the polyA strand.
                         let cdna = if is_polya { cdna } else { revcomp(&cdna) };
                         write_fasta(&mut passed, &record_id(&name, cell, &umi), &cdna)?;
                         stats.matched += 1;
+                        stats.count_path(path);
                     }
                     Assign::Small => {
                         write_fasta(&mut failed, &name, &seq)?;
@@ -217,7 +284,9 @@ pub fn run_nanopore(r1: &Path, wl_path: &Path, out_dir: &Path) -> io::Result<Sta
             failed.finish()?;
             Ok(stats)
         },
-    )
+    )?;
+    stats.report_paths();
+    Ok(stats)
 }
 
 /// Illumina: match the reverse regex on revcomp(R1), pair the barcode with R2 as cDNA, and write
@@ -323,7 +392,7 @@ mod tests {
         );
 
         match assign_nanopore(read.as_bytes(), &rev, &fwd, &wl) {
-            Assign::Matched { cell, umi: u, cdna, is_polya } => {
+            Assign::Matched { cell, umi: u, cdna, is_polya, .. } => {
                 assert_eq!(cell.render(), "A".repeat(16), "row 0 in every segment -> all-A barcode");
                 assert_eq!(u, umi.as_bytes());
                 assert_eq!(cdna, "A".repeat(55).as_bytes());
@@ -354,5 +423,94 @@ mod tests {
         let fwd = Chemistry::PipV4.barcode_regex(false);
         assert_eq!(assign_nanopore(b"ACGTACGTACGT", &rev, &fwd, &wl), Assign::Small);
         let _ = std::fs::remove_file(&p);
+    }
+
+    /// The synthetic whitelist and its row 0, as observed on the reverse strand (stored orientation).
+    fn synthetic() -> (Whitelist, Regex, Regex, [String; 4]) {
+        let p = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/whitelist/synthetic_barcodes.csv");
+        let wl = Whitelist::from_csv(&p).unwrap();
+        let rev = Chemistry::PipV4.barcode_regex(true);
+        let fwd = Chemistry::PipV4.barcode_regex(false);
+        // row 0: TCGCTGGC,TACTCT,AGGACA,AAGGAGCA (bc4,bc3,bc2,bc1)
+        let segs = [rc("TCGCTGGC"), rc("TACTCT"), rc("AGGACA"), rc("AAGGAGCA")];
+        (wl, rev, fwd, segs)
+    }
+
+    fn cell_and_path(a: Assign) -> (CellId, AssignPath) {
+        match a {
+            Assign::Matched { cell, path, .. } => (cell, path),
+            other => panic!("expected a match, got {other:?}"),
+        }
+    }
+
+    fn path_of(a: Assign) -> AssignPath {
+        cell_and_path(a).1
+    }
+
+    #[test]
+    fn nanopore_path_exact_is_regex_exact_sub() {
+        let (wl, rev, fwd, [bc4, bc3, bc2, bc1]) = synthetic();
+        let read = reverse_read(&"A".repeat(55), "ACACACGTGTGT", &bc4, &bc3, &bc2, &bc1);
+        let a = assign_nanopore(read.as_bytes(), &rev, &fwd, &wl);
+        assert_eq!(path_of(a), AssignPath::RegexExactSub);
+    }
+
+    #[test]
+    fn nanopore_path_substitution_is_regex_exact_sub() {
+        let (wl, rev, fwd, [bc4, bc3, bc2, bc1]) = synthetic();
+        let mut sub = bc1.clone().into_bytes();
+        sub[3] = if sub[3] == b'A' { b'C' } else { b'A' }; // one substitution in bc1
+        let sub = String::from_utf8(sub).unwrap();
+        let read = reverse_read(&"A".repeat(55), "ACACACGTGTGT", &bc4, &bc3, &bc2, &sub);
+        let exact = reverse_read(&"A".repeat(55), "ACACACGTGTGT", &bc4, &bc3, &bc2, &bc1);
+        let (cell, path) = cell_and_path(assign_nanopore(read.as_bytes(), &rev, &fwd, &wl));
+        let (want, _) = cell_and_path(assign_nanopore(exact.as_bytes(), &rev, &fwd, &wl));
+        assert_eq!(cell, want, "substitution corrects to the exact read's cell");
+        assert_eq!(path, AssignPath::RegexExactSub);
+    }
+
+    #[test]
+    fn nanopore_path_indel_is_regex_indel() {
+        let (wl, rev, fwd, [bc4, bc3, bc2, bc1]) = synthetic();
+        // bc1 with its first base deleted and re-padded at the end: the regex still captures 8 nt,
+        // and the edit-1 table corrects the shifted segment.
+        let indel = format!("{}A", &bc1[1..]);
+        let read = reverse_read(&"A".repeat(55), "ACACACGTGTGT", &bc4, &bc3, &bc2, &indel);
+        let exact = reverse_read(&"A".repeat(55), "ACACACGTGTGT", &bc4, &bc3, &bc2, &bc1);
+        let (cell, path) = cell_and_path(assign_nanopore(read.as_bytes(), &rev, &fwd, &wl));
+        let (want, _) = cell_and_path(assign_nanopore(exact.as_bytes(), &rev, &fwd, &wl));
+        assert_eq!(cell, want, "indel corrects to the exact read's cell");
+        assert_eq!(path, AssignPath::RegexIndel);
+    }
+
+    #[test]
+    fn nanopore_path_seal_is_seal() {
+        let (wl, rev, fwd, [bc4, bc3, bc2, bc1]) = synthetic();
+        // Break the bc3-bc2 linker (CTC -> CTT): both regexes miss, the seal aligns through it.
+        let read = format!("{}ACACACGTGTGT{bc4}CTCGA{bc3}CTT{bc2}CAT{bc1}AA", "A".repeat(55));
+        let a = assign_nanopore(read.as_bytes(), &rev, &fwd, &wl);
+        match &a {
+            Assign::Matched { is_polya, .. } => assert!(is_polya),
+            other => panic!("expected a match, got {other:?}"),
+        }
+        assert_eq!(path_of(a), AssignPath::Seal);
+    }
+
+    #[test]
+    fn nanopore_run_paths_sum_to_matched() {
+        let md = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let out = std::env::temp_dir().join(format!("bp_bc_paths_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&out);
+        std::fs::create_dir_all(&out).unwrap();
+        let stats = run_nanopore(
+            &md.join("tests/fixtures/barcode_nanopore.fq.gz"),
+            &md.join("tests/whitelist/synthetic_barcodes.csv"),
+            &out,
+        )
+        .unwrap();
+        assert!(stats.matched > 0);
+        assert_eq!(stats.regex_exact_sub + stats.regex_indel + stats.seal, stats.matched);
+        let _ = std::fs::remove_dir_all(&out);
     }
 }
