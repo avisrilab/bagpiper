@@ -198,9 +198,10 @@ pub fn run_nanopore(
     let wl = Whitelist::from_csv(wl_path)?;
     let rev = Chemistry::PipV4.barcode_regex(true);
     let fwd = Chemistry::PipV4.barcode_regex(false);
+    // Validate every --r1 path before creating any output, so a bad path fails fast and clean.
+    let mut reader = fastq::MultiReader::open(r1)?;
     let passed = fastq::gz_writer(out_dir.join("passed.bcd.nanopore.fa.gz"))?;
     let failed = fastq::gz_writer(out_dir.join("failed.bcd.nanopore.fa.gz"))?;
-    let mut reader = fastq::MultiReader::open(r1);
 
     parallel::run(
         || {

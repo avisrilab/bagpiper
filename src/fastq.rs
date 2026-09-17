@@ -28,11 +28,28 @@ pub struct MultiReader {
 }
 
 impl MultiReader {
-    pub fn open(paths: &[PathBuf]) -> MultiReader {
-        MultiReader {
+    /// Check every path up front (exists, is a regular file, opens), then hold the list for lazy
+    /// per-file streaming. A bad path anywhere in the list fails here, before any record is read,
+    /// rather than at the record boundary after the preceding files have been consumed. The error is
+    /// `NotFound` and names the offending path in full.
+    pub fn open(paths: &[PathBuf]) -> io::Result<MultiReader> {
+        for p in paths {
+            let not_found = |why: String| {
+                io::Error::new(
+                    io::ErrorKind::NotFound,
+                    format!("input fastq not found: {} ({})", p.display(), why),
+                )
+            };
+            let meta = std::fs::metadata(p).map_err(|e| not_found(e.to_string()))?;
+            if !meta.is_file() {
+                return Err(not_found("not a regular file".to_string()));
+            }
+            File::open(p).map_err(|e| not_found(format!("cannot open: {}", e)))?;
+        }
+        Ok(MultiReader {
             paths: paths.to_vec().into_iter(),
             cur: None,
-        }
+        })
     }
 
     /// The next record as owned `(id, seq)`, advancing to the next file at end-of-file. None once
@@ -156,7 +173,7 @@ mod tests {
         let a = write("a.fa.gz", &[b"r1", b"r2"]);
         let b = write("b.fa.gz", &[b"r3", b"r4"]);
 
-        let mut mr = MultiReader::open(&[a.clone(), b]);
+        let mut mr = MultiReader::open(&[a.clone(), b]).unwrap();
         let mut ids = Vec::new();
         while let Some(res) = mr.next_seq() {
             ids.push(String::from_utf8(res.unwrap().0).unwrap());
@@ -168,7 +185,7 @@ mod tests {
         );
 
         // one file: same as reading that file alone
-        let mut one = MultiReader::open(std::slice::from_ref(&a));
+        let mut one = MultiReader::open(std::slice::from_ref(&a)).unwrap();
         let mut n = 0;
         while let Some(res) = one.next_seq() {
             res.unwrap();
@@ -177,7 +194,65 @@ mod tests {
         assert_eq!(n, 2);
 
         // no files: nothing to read
-        assert!(MultiReader::open(&[]).next_seq().is_none());
+        assert!(MultiReader::open(&[]).unwrap().next_seq().is_none());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn fixture(name: &str) -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures")
+            .join(name)
+    }
+
+    #[test]
+    fn multireader_streams_two_fixture_files_as_one_sequence() {
+        let paths = [fixture("multi_r1_a.fq.gz"), fixture("multi_r1_b.fq.gz")];
+        let mut mr = MultiReader::open(&paths).unwrap();
+        let mut ids = Vec::new();
+        while let Some(res) = mr.next_seq() {
+            ids.push(String::from_utf8(res.unwrap().0).unwrap());
+        }
+        assert_eq!(ids, vec!["multi_a1", "multi_a2", "multi_b1", "multi_b2"]);
+    }
+
+    #[test]
+    fn multireader_fails_fast_when_second_path_is_missing() {
+        // The first file exists; the second does not. open must fail before any record is read
+        // (previously the first file streamed in full and the missing one surfaced as an Err item).
+        let missing = fixture("does_not_exist_multi_r1_b.fq.gz");
+        let paths = [fixture("multi_r1_a.fq.gz"), missing.clone()];
+        let mut records = 0;
+        match MultiReader::open(&paths) {
+            Ok(mut mr) => {
+                while let Some(res) = mr.next_seq() {
+                    if res.is_ok() {
+                        records += 1;
+                    }
+                }
+                panic!("open must fail when a path does not exist");
+            }
+            Err(e) => {
+                assert_eq!(e.kind(), io::ErrorKind::NotFound);
+                let msg = e.to_string();
+                assert!(
+                    msg.contains(&missing.display().to_string()),
+                    "error must name the missing path in full, got: {}",
+                    msg
+                );
+            }
+        }
+        assert_eq!(records, 0, "no record may be read when a path is missing");
+    }
+
+    #[test]
+    fn multireader_rejects_directory_path() {
+        let dir = fixture("");
+        assert!(dir.is_dir());
+        let paths = [fixture("multi_r1_a.fq.gz"), dir.clone()];
+        let e = MultiReader::open(&paths)
+            .err()
+            .expect("a directory must be rejected");
+        assert_eq!(e.kind(), io::ErrorKind::NotFound);
+        assert!(e.to_string().contains(&dir.display().to_string()));
     }
 }

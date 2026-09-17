@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
-use log::info;
+use log::{error, info};
 
 #[derive(Parser)]
 #[command(name = "bagpiper", version, about = "Process PIP-seq data.")]
@@ -106,23 +106,30 @@ fn main() -> std::io::Result<()> {
                     .collect::<Vec<_>>()
                     .join(",")
             );
-            let stats = if nanopore {
-                bagpiper::barcode::run_nanopore(&r1, &whitelist, &output, workers)?
+            let result = if nanopore {
+                bagpiper::barcode::run_nanopore(&r1, &whitelist, &output, workers)
+            } else if r1.len() != 1 {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "illumina mode takes a single --r1 (paired with --r2)",
+                ))
             } else {
-                if r1.len() != 1 {
-                    return Err(std::io::Error::new(
-                        std::io::ErrorKind::InvalidInput,
-                        "illumina mode takes a single --r1 (paired with --r2)",
-                    ));
-                }
-                let r2 = r2.ok_or_else(|| {
-                    std::io::Error::new(
+                match r2 {
+                    Some(r2) => {
+                        bagpiper::barcode::run_illumina(&r1[0], &r2, &whitelist, &output, workers)
+                    }
+                    None => Err(std::io::Error::new(
                         std::io::ErrorKind::InvalidInput,
                         "illumina mode needs --r2",
-                    )
-                })?;
-                bagpiper::barcode::run_illumina(&r1[0], &r2, &whitelist, &output, workers)?
+                    )),
+                }
             };
+            // Log the failure so the run log carries it (main's Err only reaches stderr), then exit
+            // non-zero with the same message.
+            let stats = result.map_err(|e| {
+                error!("barcode failed: {}", e);
+                e
+            })?;
             info!(
                 "total {}  matched {}  small {}  ambiguous {}  mismatch {}",
                 stats.total, stats.matched, stats.small, stats.ambiguous, stats.mismatch
