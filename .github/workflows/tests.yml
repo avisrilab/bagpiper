@@ -1,0 +1,48 @@
+name: tests
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+
+jobs:
+  unit:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.97.1
+      - run: cargo test --release --locked
+
+  # Each earlier release, built from its tag, must still reproduce its recorded end-to-end output
+  # under this commit's tests.
+  releases:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        release: ["0.1.0", "0.1.1"]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: suite
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ matrix.release }}
+          path: release
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.97.1
+      - run: cargo build --release --locked
+        working-directory: release
+      - run: cargo test --release --locked --test e2e
+        working-directory: suite
+        env:
+          BAGPIPER_BIN: ${{ github.workspace }}/release/target/release/bagpiper

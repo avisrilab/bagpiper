@@ -1,0 +1,1 @@
+total 768 matched 650 small 0 ambiguous 101 mismatch 17
